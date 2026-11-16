@@ -163,9 +163,9 @@ fn check(c, fails) {
   let name = car(c)
   let src = car(cdr(c))
   let want = car(cdr(cdr(c)))
-  let ta_forms = parser.parse(tokenizer.tokenize(src))
+  let ta_forms = parser.parse_forms(tokenizer.tokenize(src))
   print(str.concat("--- ", str.concat(name, ": ")))
-  print(str.concat("    TA    ", kl.write_program(form.from_untyped_program(ta_forms))))
+  print(str.concat("    TA    ", kl.write_program(ta_forms)))
   // lib_src 是 lisp 语法：在 form → Top 边界上**前置**，与用户代码同一条边界
   // （不能混进 TA parser 的输入）。
   let tops = list.append(prelude(), lower-ast.lower_program(ta_forms))
@@ -195,7 +195,7 @@ fn negatives() {
 fn check_neg(c) {
   let name = car(c)
   let src = car(cdr(c))
-  let tops = list.append(prelude(), lower-ast.lower_program(parser.parse(tokenizer.tokenize(src))))
+  let tops = list.append(prelude(), lower-ast.lower_program(parser.parse_forms(tokenizer.tokenize(src))))
   match compile.compile(tops) {
         compile.Fail(msg) -> print(str.concat("NEG OK   ", str.concat(name, str.concat(": ", msg))))
     compile.Out(fns, consts) -> print(str.concat("NEG FAIL ", str.concat(name, ": compiled anyway")))
@@ -223,7 +223,7 @@ fn check_known(c) {
   let src = car(cdr(c))
   let want = car(cdr(cdr(c)))
   let path = str.concat("test/backend/bridge_", str.concat(name, ".tabc"))
-  let tops = lower-ast.lower_program(parser.parse(tokenizer.tokenize(src)))
+  let tops = lower-ast.lower_program(parser.parse_forms(tokenizer.tokenize(src)))
   match compile.compile(tops) {
         compile.Fail(msg) -> print(str.concat("XFAIL ", str.concat(name, str.concat(": compile rejected: ", msg))))
     compile.Out(fns, consts) -> {

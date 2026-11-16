@@ -18,10 +18,9 @@
 // 本层谁都不再见 form。Top → .kl 文本的写回能力同样在 kl.ta（--emit-kl/link
 // 用），本层不参与。
 //
-// 本层在树上走的类型是 form.ta 的 `Form`（原子 + 列表）：模式、字面量、臂都
-// 在类型上钉住形状，`car`/`cdr` 猜元数的写法退场。唯一还在未类型化侧的入口
-// 是 `lower_program` 的入参（const 内联整棵树按形状重写，随 typecheck 迁移
-// 才消失），转换点只有一处：`lower_forms` 里的 `form.from_untyped`。
+// 本层树上走的类型**全程**是 form.ta 的 `Form`（原子 + 列表）：模式、字面量、
+// 臂都在类型上钉住形状，`car`/`cdr` 猜元数的写法退场。入口与出口之间没有
+// 「转成未类型化再猜一次」：`lower_program` 吃 List(Form)、交 List(Top)。
 //
 // 入口 form 是**标准扁平 sexp**（int / string / symbol / nil / 扁平 cons 列表），
 // TA 上层（tokenizer/parser/typecheck）已把所有宏语法糖展开，已实证：
@@ -84,73 +83,74 @@ fn call2(name : Symbol, a : ast.Expr, b : ast.Expr) -> ast.Expr {
 // 引用就地内联，再丢掉 const form 本身。lambda 参数 / let 绑定 / match 与
 // receive 的模式变量是 binder，shadow 同名 const（作用域在定义点）。
 //
+// 源树侧一律 form.Form：**读**的是 parser 交来的 Form，**交出去**的还是 Form
+// （重建新树，不就地改），降到 ast.Top 是下一节 per-form 的事。
+// const 表是旁路数据，但它的两个槽都是源树里的东西（名字 + 值表达式），故也
+// 写成 Form 形状的二元表 (name value)——不再有第二套裸 cons 的说法。
+//
 // 迁移期 codegen.ta 里还有一份同源副本（旧链自用，7a 不动它）；codegen
 // 删除后这里成为唯一实现。语义正例：test/basic/const-*.ta。
 // ----------
-fn is_symbol_val(v) {
-  if int?(v) { 0 }
-  else if string?(v) { 0 }
-  else if pair?(v) { 0 }
-  else if null?(v) { 0 }
-  else { 1 }
+
+// const_entry(f) — (const NAME value) → 二元表 (NAME value)：const 表的一项。
+fn const_entry(f : form.Form) -> form.Form {
+  let items = form.items(f)
+  form.lst([form.nth(items, 1), form.nth(items, 2)])
 }
 
-fn collect_consts(forms, acc) {
-  match forms {
-    nil -> acc
-    cons(form, rest) -> {
-      if pair?(form) {
-        if car(form) == 'const {
-          let name = car(cdr(form))
-          let val_expr = car(cdr(cdr(form)))
-          collect_consts(rest, cons(cons(name, val_expr), acc))
-        } else { collect_consts(rest, acc) }
-      } else { collect_consts(rest, acc) }
+fn collect_consts(forms : List(form.Form), acc : List(form.Form)) -> List(form.Form) {
+  if null?(forms) {
+    acc
+  } else {
+    let f = car(forms)
+    if form.is_sym(form.nth(form.items(f), 0), 'const) {
+      collect_consts(cdr(forms), cons(const_entry(f), acc))
+    } else {
+      collect_consts(cdr(forms), acc)
     }
   }
 }
 
-fn assq_key(key, alist) {
-  match alist {
-    nil -> nil
-    cons(pair, rest) -> {
-      if car(pair) == key { pair }
-      else { assq_key(key, rest) }
+// assq_key(key, alist) — 二元表里按名字取值；没有就是 None（调用点「原样
+// 返回这个节点」的语义由 None 表达，不再靠 nil 与 nil 值不可分）。
+fn assq_key(key : Symbol, alist : List(form.Form)) -> option.Option(form.Form) {
+  if null?(alist) {
+    option.None
+  } else {
+    let items = form.items(car(alist))
+    if form.is_sym(form.nth(items, 0), key) {
+      option.Some(form.nth(items, 1))
+    } else {
+      assq_key(key, cdr(alist))
     }
   }
 }
 
-fn sym_in_list(sym, lst) {
-  match lst {
-    nil -> 0
-    cons(x, rest) -> {
-      if x == sym { 1 } else { sym_in_list(sym, rest) }
-    }
-  }
+fn sym_in_list(sym : Symbol, lst : List(Symbol)) -> Bool {
+  if null?(lst) { false } else if car(lst) == sym { true } else { sym_in_list(sym, cdr(lst)) }
 }
 
-fn append_shadow(extra, shadow) {
-  match extra {
-    nil -> shadow
-    cons(x, rest) -> cons(x, append_shadow(rest, shadow))
-  }
+fn append_shadow(extra : List(Symbol), shadow : List(Symbol)) -> List(Symbol) {
+  if null?(extra) { shadow } else { cons(car(extra), append_shadow(cdr(extra), shadow)) }
 }
 
 // collect_pattern_bindings(pat, acc) — lowercase identifiers in a pattern
 // are binders; uppercase constructors ((quote X), (Name args)) and literals
 // bind nothing. Used to shadow const names inside match/receive arm bodies.
-fn collect_pattern_bindings(pat, acc) {
-  if is_symbol_val(pat) == 1 {
-    cons(pat, acc)
-  } else {
-    if pair?(pat) {
-      if car(pat) == 'quote {
-        acc
-      } else {
-        collect_pattern_bindings(cdr(pat), collect_pattern_bindings(car(pat), acc))
-      }
-    } else { acc }
+fn collect_pattern_bindings(pat : form.Form, acc : List(Symbol)) -> List(Symbol) {
+  match pat {
+    form.FAtom(ast.CSym(name)) -> cons(name, acc)
+    form.FAtom(_) -> acc
+    form.FList(items) -> {
+      if form.is_sym(form.nth(items, 0), 'quote) { acc }
+      else { collect_binding_list(items, acc) }
+    }
   }
+}
+
+fn collect_binding_list(items : List(form.Form), acc : List(Symbol)) -> List(Symbol) {
+  if null?(items) { acc }
+  else { collect_binding_list(cdr(items), collect_pattern_bindings(car(items), acc)) }
 }
 
 // resolve_match_arms(arms, consts, shadow) — each arm is (pat body) — two
@@ -158,141 +158,146 @@ fn collect_pattern_bindings(pat, acc) {
 // a list, so the element count (not emptiness of cddr) tells them apart.
 // Pattern binders shadow const names inside that arm's guard and body; the
 // pattern itself is a declaration region, so it is left as-is.
-fn resolve_match_arms(arms, consts, shadow) {
-  match arms {
-    nil -> nil
-    cons(arm, rest) -> {
-      let pat = car(arm)
-      let binders = collect_pattern_bindings(pat, nil)
-      let new_shadow = append_shadow(binders, shadow)
-      let new_arm = if list.length(arm) == 2 {
-        // (pat body)
-        let body = car(cdr(arm))
-        cons(pat, cons(resolve_consts(body, consts, new_shadow), nil))
-      } else {
-        // (pat guard body)
-        let guard = car(cdr(arm))
-        let body = car(cdr(cdr(arm)))
-        cons(pat, cons(resolve_consts(guard, consts, new_shadow),
-        cons(resolve_consts(body, consts, new_shadow), nil)))
-      }
-      cons(new_arm, resolve_match_arms(rest, consts, shadow))
+fn resolve_match_arms(arms : List(form.Form), consts : List(form.Form),
+shadow : List(Symbol)) -> List(form.Form) {
+  if null?(arms) {
+    nil
+  } else {
+    let items = form.items(car(arms))
+    let pat = form.nth(items, 0)
+    let new_shadow = append_shadow(collect_pattern_bindings(pat, nil), shadow)
+    let new_arm = if null?(cdr(cdr(items))) {
+      // (pat body)
+      form.lst([pat, resolve_consts(form.nth(items, 1), consts, new_shadow)])
+    } else {
+      // (pat guard body)
+      form.lst([pat,
+      resolve_consts(form.nth(items, 1), consts, new_shadow),
+      resolve_consts(form.nth(items, 2), consts, new_shadow)])
     }
+    cons(new_arm, resolve_match_arms(cdr(arms), consts, shadow))
   }
 }
 
-// resolve_consts(ast, consts, shadow) — inline (const NAME value) references
-// into the AST. The shadow list holds binder names (lambda params, let
+// resolve_consts(e, consts, shadow) — inline (const NAME value) references
+// into the form tree. The shadow list holds binder names (lambda params, let
 // bindings, match/receive pattern vars) that must NOT be substituted even if
 // they collide with a const name. Binders are scoped at their definition
 // site, so the substitution is scope-aware.
-fn resolve_consts(ast, consts, shadow) {
-  if pair?(ast) {
-    let head = car(ast)
-    if head == 'quote {
-      let inner = car(cdr(ast))
-      if is_symbol_val(inner) == 1 {
-        if sym_in_list(inner, shadow) == 1 {
-          ast
-        } else {
-          let pair = assq_key(inner, consts)
-          match pair {
-            nil -> ast
-            _ -> cdr(pair)
-          }
-        }
-      } else { ast }
-    } else {
-      if head == 'define || head == 'define_pub {
-        // (define (name params...) body) — params are binders for the body.
-        let sig = car(cdr(ast))
-        let params = cdr(sig)
-        let body = car(cdr(cdr(ast)))
-        let new_shadow = append_shadow(params, shadow)
-        cons(head, cons(sig, cons(resolve_consts(body, consts, new_shadow), nil)))
-      } else {
-        if head == 'lambda {
-          // ('lambda params body ret_type) — params are binders for the
-          // body; the ret_type (nil when absent) is a type annotation and
-          // is preserved verbatim.
-          // The ret_type slot is optional (the `use` desugar builds
-          // (lambda (x) rest) without one) — read it nil-safely.
-          let params = car(cdr(ast))
-          let body = car(cdr(cdr(ast)))
-          let ret_type = list.nth(ast, 3)
-          let new_shadow = append_shadow(params, shadow)
-          cons('lambda, cons(params, cons(resolve_consts(body, consts, new_shadow), cons(ret_type, nil))))
-        } else {
-          if head == 'let {
-            // ('let var expr rest) — var is a binder for rest only. A flat
-            // block-level `let` has no rest slot yet (3-element form), so
-            // the fourth slot is read nil-safely.
-            let var_sym = car(cdr(ast))
-            let val_expr = car(cdr(cdr(ast)))
-            let rest = list.nth(ast, 3)
-            cons('let, cons(var_sym,
-            cons(resolve_consts(val_expr, consts, shadow),
-            cons(resolve_consts(rest, consts, cons(var_sym, shadow)), nil))))
-          } else {
-            if head == 'match {
-              // ('match scrut arms...) — pattern vars scope per-arm.
-              let scrut = car(cdr(ast))
-              let arms = cdr(cdr(ast))
-              cons('match, cons(resolve_consts(scrut, consts, shadow),
-              resolve_match_arms(arms, consts, shadow)))
-            } else {
-              if head == 'receive {
-                // ('receive arms...) — pattern vars scope per-arm.
-                let arms = cdr(ast)
-                cons('receive, resolve_match_arms(arms, consts, shadow))
-              } else {
-                cons(resolve_consts(car(ast), consts, shadow),
-                resolve_consts(cdr(ast), consts, shadow))
-              }
-            }
-          }
-        }
-      }
-    }
+fn resolve_consts(e : form.Form, consts : List(form.Form), shadow : List(Symbol)) -> form.Form {
+  match e {
+    form.FAtom(ast.CSym(name)) -> subst(name, e, consts, shadow)
+    form.FAtom(_) -> e
+    form.FList(items) -> resolve_compound(items, consts, shadow)
   }
-  else if is_symbol_val(ast) == 1 {
-    if sym_in_list(ast, shadow) == 1 {
-      ast
-    } else {
-      let pair = assq_key(ast, consts)
-      match pair {
-        nil -> ast
-        _ -> cdr(pair)
-      }
-    }
-  }
-  else { ast }
 }
-fn resolve_const_values(consts, all_consts) {
-  match consts {
-    nil -> nil
-    cons(entry, rest) -> {
-      let name = car(entry)
-      let value = cdr(entry)
-      let resolved_val = resolve_consts(value, all_consts, nil)
-      cons(cons(name, resolved_val), resolve_const_values(rest, all_consts))
+
+// subst(name, e, ...) — 名字槽的三种去向：binder（shadow）里原样、const 表里
+// 换成值表达式、其余原样。
+fn subst(name : Symbol, e : form.Form, consts : List(form.Form),
+shadow : List(Symbol)) -> form.Form {
+  if sym_in_list(name, shadow) {
+    e
+  } else {
+    match assq_key(name, consts) {
+      option.None -> e
+      option.Some(v) -> v
     }
   }
 }
 
-fn filter_const_forms(forms, acc) {
-  match forms {
-    nil -> list.rev_append(acc, nil)
-    cons(form, rest) -> {
-      if pair?(form) {
-        if car(form) == 'const {
-          filter_const_forms(rest, acc)
-        } else {
-          filter_const_forms(rest, cons(form, acc))
-        }
-      } else {
-        filter_const_forms(rest, cons(form, acc))
+// resolve_compound(items, ...) — 一个列表节点：按头符号决定哪些槽是**声明处**
+// （形参 / 绑定 / 模式）→ 它们的名字在各自的体里 shadow const。
+fn resolve_compound(items : List(form.Form), consts : List(form.Form),
+shadow : List(Symbol)) -> form.Form {
+  let head = form.nth(items, 0)
+  let rest = cdr(items)
+  if form.is_sym(head, 'quote) {
+    resolve_quoted(items, consts, shadow)
+  } else if form.is_sym(head, 'define) || form.is_sym(head, 'define_pub) {
+    // (define (name params...) body) — params are binders for the body.
+    let params = form.syms(cdr(form.items(form.nth(rest, 0))))
+    form.lst(cons(head, cons(form.nth(rest, 0),
+    cons(resolve_consts(form.nth(rest, 1), consts, append_shadow(params, shadow)), nil))))
+  } else if form.is_sym(head, 'lambda) {
+    // ('lambda params body ret_type) — params are binders for the body; the
+    // ret_type (nil when absent) is a type annotation and is preserved
+    // verbatim. 该槽可选（`use` 脱糖出的 (lambda (x) rest) 没有它），故按
+    // nil 读——槽位读空回落 nil 原子，与旧树尾部为空同义。
+    let params = form.parse_params(form.nth(rest, 0))
+    form.lst([head, form.nth(rest, 0),
+    resolve_consts(form.nth(rest, 1), consts, append_shadow(params, shadow)),
+    form.nth(rest, 2)])
+  } else if form.is_sym(head, 'let) {
+    resolve_let(head, rest, consts, shadow)
+  } else if form.is_sym(head, 'match) {
+    // ('match scrut arms...) — pattern vars scope per-arm.
+    form.lst(cons(head, cons(resolve_consts(form.nth(rest, 0), consts, shadow),
+    resolve_match_arms(cdr(rest), consts, shadow))))
+  } else if form.is_sym(head, 'receive) {
+    // ('receive arms...) — pattern vars scope per-arm.
+    form.lst(cons(head, resolve_match_arms(rest, consts, shadow)))
+  } else {
+    // 其余一律「逐元素替换」：头也是引用（构造器 / 函数名 / 柯里化头）。
+    form.lst(cons(resolve_consts(head, consts, shadow),
+    resolve_forms(rest, consts, shadow)))
+  }
+}
+
+// resolve_quoted(items, ...) — (quote NAME)：NAME 是 const 引用时整块换成值
+// 表达式（quote 一起消失），binder 名与其它载荷原样保留。
+fn resolve_quoted(items : List(form.Form), consts : List(form.Form),
+shadow : List(Symbol)) -> form.Form {
+  match form.nth(items, 1) {
+    form.FAtom(ast.CSym(name)) -> {
+      match assq_key(name, consts) {
+        option.Some(v) -> if sym_in_list(name, shadow) { form.lst(items) } else { v }
+        option.None -> form.lst(items)
       }
+    }
+    _ -> form.lst(items)
+  }
+}
+
+// resolve_let(head, rest, ...) — ('let var expr rest)：var 只 shadow rest。
+// 块中间的三元素 let 还没有 rest 槽，按 nil 读（成形与旧树一致的四元素）。
+fn resolve_let(head : form.Form, rest : List(form.Form), consts : List(form.Form),
+shadow : List(Symbol)) -> form.Form {
+  let v = form.nth(rest, 0)
+  form.lst([head, v,
+  resolve_consts(form.nth(rest, 1), consts, shadow),
+  resolve_consts(form.nth(rest, 2), consts, cons(form.sym_at(v), shadow))])
+}
+
+fn resolve_forms(forms : List(form.Form), consts : List(form.Form),
+shadow : List(Symbol)) -> List(form.Form) {
+  if null?(forms) {
+    nil
+  } else {
+    cons(resolve_consts(car(forms), consts, shadow), resolve_forms(cdr(forms), consts, shadow))
+  }
+}
+
+fn resolve_const_values(consts : List(form.Form), all_consts : List(form.Form)) -> List(form.Form) {
+  if null?(consts) {
+    nil
+  } else {
+    let items = form.items(car(consts))
+    cons(form.lst([form.nth(items, 0),
+    resolve_consts(form.nth(items, 1), all_consts, nil)]),
+    resolve_const_values(cdr(consts), all_consts))
+  }
+}
+
+fn filter_const_forms(forms : List(form.Form), acc : List(form.Form)) -> List(form.Form) {
+  if null?(forms) {
+    list.reverse(acc)
+  } else {
+    let f = car(forms)
+    if form.is_sym(form.nth(form.items(f), 0), 'const) {
+      filter_const_forms(cdr(forms), acc)
+    } else {
+      filter_const_forms(cdr(forms), cons(f, acc))
     }
   }
 }
@@ -304,11 +309,11 @@ fn filter_const_forms(forms, acc) {
 // Resolve compile-time constants: inline (const NAME expr) values into the
 // AST and drop the const forms. Scope-aware: lambda params, let bindings and
 // match/receive pattern vars shadow const names in their bodies.
-fn resolve_const_forms(ast) {
-  let consts = collect_consts(ast, nil)
+fn resolve_const_forms(forms : List(form.Form)) -> List(form.Form) {
+  let consts = collect_consts(forms, nil)
   let resolved_consts = resolve_const_values(consts, consts)
-  let clean_ast = filter_const_forms(ast, nil)
-  resolve_consts(clean_ast, resolved_consts, nil)
+  let clean_forms = filter_const_forms(forms, nil)
+  resolve_forms(clean_forms, resolved_consts, nil)
 }
 
 // ---------- 顶层：降级整个 program，出口就是 kl 的 AST ----------
@@ -317,15 +322,11 @@ fn resolve_const_forms(ast) {
 // 返回 List(Top) —— ast.ta 的 kl AST，也就是 compile.compile 的入参类型。
 // 没有错误通道：本层造的就是 Top 本身，形状由类型穷尽 match 钉住；「降不
 // 了」这种中间状态不存在，也不需要 `None` 当「下游可能不收」的告示。
-pub fn lower_program(forms) -> List(ast.Top) {
+pub fn lower_program(forms : List(form.Form)) -> List(ast.Top) {
   // const 内联见上文「const 内联」一节（本文件自带，scope-aware：lambda/let/
   // match 变量 shadow const 名）——lisp compile 只认识「无 const 的 ast」，
   // 对接层负责在 lowering 前把它变出来，编译器层不动。
   let resolved = resolve_const_forms(forms)
-  // 未类型化 → Form 的**唯一**转换点（每个顶层 form 一处，见 lower_forms）。
-  // const 内联还在未类型化侧（它整棵树重写、并按形状重建节点）；等 typecheck
-  // 也吃 Form（M4）这一步连同上面的 resolve_const_forms 一起消失，
-  // lower_program 的入参直接就是 List(Form)。
   let lowered = lower_forms(resolved)
   // 补的调用包成单元素表：list.append 拼的是**元素**。
   if defines_main(lowered) { list.append(lowered, cons(main_top(), nil)) } else { lowered }
@@ -376,23 +377,19 @@ fn inert_form(items : List(form.Form)) -> Bool {
   || form.is_sym(car(items), 'external_fn)
 }
 
-// lower_forms: 未类型化顶层 form 列表 → List(Top)。两件事都在这一段里：
-//
-//  1. **逐 form** 转成 Form 再降级。Form 表示比裸 pair 重（原子多一层 FAtom，
-//     列表多一层 FList），一次性把整棵树转完 = 白拿一份整个程序的副本。
-//  2. **尾递归 + 累积器**（收尾 reverse 一次）。写成 `cons(top, lower_forms(rest))`
-//     就停在非尾位置，每个待处理的 frame 都活着，而 frame 里的
-//     `form.from_untyped` 临时值等于把每层 Form 副本一路钉在堆上 —— 编译
-//     driver.ta 的峰值因此撞上 64 MiB 的 arena 上限（bootstrap 掷硬币）。
-fn lower_forms(forms) -> List(ast.Top) {
+// lower_forms: List(Form) → List(Top)。尾递归 + 累积器（收尾 reverse 一次）：
+// 写成 `cons(top, lower_forms(rest))` 就停在非尾位置，每个待处理的 frame 都
+// 活着，累积起来撞上 64 MiB 的 arena 上限（bootstrap 掷硬币），所以这里靠
+// 累积器把每个顶层 form 的中间树**及时**解引用。
+fn lower_forms(forms : List(form.Form)) -> List(ast.Top) {
   list.reverse(lower_forms_acc(forms, nil))
 }
 
-fn lower_forms_acc(forms, acc) -> List(ast.Top) {
+fn lower_forms_acc(forms : List(form.Form), acc : List(ast.Top)) -> List(ast.Top) {
   match forms {
     nil -> acc
     cons(f, rest) -> {
-      match lower_toplevel(form.from_untyped(f)) {
+      match lower_toplevel(f) {
         option.None -> lower_forms_acc(rest, acc)
         option.Some(top) -> {
           lower_forms_acc(rest, cons(top, acc))

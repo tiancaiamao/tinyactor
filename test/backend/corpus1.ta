@@ -28,7 +28,7 @@ fn run_one(name, path, text) {
   if int?(toks) {
     line(name, "tokenize" , "")
   } else {
-          let ta_forms = parser.parse(toks)
+          let ta_forms = parser.parse_forms(toks)
     if int?(ta_forms) {
       line(name, "parse" , "")
     } else {

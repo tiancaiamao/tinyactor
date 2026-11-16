@@ -10,7 +10,7 @@ fn read_file(path) {
 
 fn parse_ta(content) {
   let toks = tokenizer.tokenize(content)
-  parser.parse(toks)
+  parser.parse_forms(toks)
 }
 
 fn ast_equal(a, b) {

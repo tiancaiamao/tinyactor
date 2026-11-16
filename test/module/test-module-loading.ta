@@ -31,7 +31,7 @@ fn main() {
     
     // Parse with TA parser
     let toks = tokenizer.tokenize(src)
-    let ast_ta = parser.parse(toks)
+    let ast_ta = parser.parse_forms(toks)
     let len_ta = list_length(ast_ta)
     print(str.concat("TA parser forms: ", str.from_int(len_ta)))
     

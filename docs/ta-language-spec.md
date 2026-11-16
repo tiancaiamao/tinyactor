@@ -6,7 +6,7 @@
 
 **编译流程**：
 ```
-source → tokenizer.tokenize → parser.parse → typecheck.infer_program → lower-ast.lower_program → compile.compile → VM
+source → tokenizer.tokenize → parser.parse_forms → typecheck.infer_program → lower-ast.lower_program → compile.compile → VM
 ```
 
 **运行时**：基于字节码的抢占式调度 VM，多线程 worker，每个 actor 是一个轻量进程，通过消息传递通信。

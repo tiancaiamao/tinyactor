@@ -354,31 +354,3 @@ fn from_untyped_list(x) -> List(Form) {
     nil
   }
 }
-
-// ---------- 回到未类型化树（临时桥） ----------
-//
-// Form 树降回未类型化树。临时桥：parser 已经产 Form，typecheck 还吃未类型化树，
-// 桥就只留在这一处（parser 的 parse / parse_cov 两个兼容入口）。M4 让 typecheck
-// 直接吃 Form 之后，这两个函数和那两个入口一起删。
-//
-// 原子侧直接复用 ast.const_atom：`Form` 的原子**就是** `ast.Const`，未类型化
-// 形状的拼法在 ast.ta 里已经有一份（`('float "1.5")` 也在那一份里），这里不再
-// 写第二个说法。列表侧是结构映射：`FList` 恒非空（不变式 1），空表在 form 层
-// 是 `FAtom(CNil)`，降下去就是 nil。
-pub fn to_untyped(f : Form) -> Atom {
-  match f {
-    FAtom(c) -> ast.const_atom(c)
-    FList(items) -> to_untyped_list(items)
-  }
-}
-
-// parse_error 标记在 form 层是 `(parse_error msg pos)` 三段真列表，降下去还是这个
-// 形状——driver 的 find_parse_error 直接读第三个元素。旧树是点对尾
-// `(parse_error msg . pos)`，那是「位置不是列表元素」的残留，随本层一起退场。
-fn to_untyped_list(items : List(Form)) -> Atom {
-  cons(to_untyped(car(items)), to_untyped_program(cdr(items)))
-}
-
-pub fn to_untyped_program(forms : List(Form)) -> List(Atom) {
-  if null?(forms) { nil } else { cons(to_untyped(car(forms)), to_untyped_program(cdr(forms))) }
-}

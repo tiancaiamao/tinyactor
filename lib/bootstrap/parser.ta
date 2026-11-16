@@ -1475,12 +1475,7 @@ fn parse_pattern(toks, pos) -> Step {
 
 // === Top-level parser ===
 
-// 分层边界：form 层的树只在这里落回未类型化值（临时桥，见 form.to_untyped）。
-pub fn parse(toks) {
-  form.to_untyped_program(parse_forms(toks))
-}
-
-// parse_forms(toks) — 与 parse 同一条路，交出来的是 form.Form 树。
+// parse_forms(toks) — TA 源 → form.Form 树（本层唯一出口，没有未类型化副本）。
 pub fn parse_forms(toks) -> List(form.Form) {
   let id = vm.make_tok_vec(toks)
   let result = parse_toplevels(tok_bundle(id, nil, nil), 0, nil)
@@ -1494,14 +1489,10 @@ fn tok_bundle(id, poss, path) {
   cons(id, cons(poss, cons(path, nil)))
 }
 
-// parse_cov(toks, poss, path): the --cov entry. Same grammar; every
+// parse_forms_cov(toks, poss, path): the --cov entry. Same grammar; every
 // statement and match/receive arm body is wrapped in a
 // (begin (cov.line path line) form) marker for covinst to rewrite into
 // (cov.hit k). See cov_tag / driver parse_module_content.
-pub fn parse_cov(toks, poss, path) {
-  form.to_untyped_program(parse_forms_cov(toks, poss, path))
-}
-
 pub fn parse_forms_cov(toks, poss, path) -> List(form.Form) {
   let id = vm.make_tok_vec(toks)
   let result = parse_toplevels(tok_bundle(id, poss, path), 0, nil)

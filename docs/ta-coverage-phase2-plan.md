@@ -61,7 +61,7 @@ AST 形状变化只存在于 `--cov` 构建的 parse→instrument 区间。若�
 - `parse_module_content`（driver.ta）在 `--cov` 下把 `poss` 与 `path` 传给 parser 的 block
   函数族；每个语句 / arm body 在构造处包一层 `(begin (cov.line file line) stmt)`，行号取
   语句首 token（arm 取 pattern 首 token）。
-- `parser.parse(toks)` 签名不变、行为不变（委托给带 `poss` 的内部路径，`poss=nil` 时不打
+- `parser.parse_forms(toks)` 签名不变、行为不变（委托给带 `poss` 的内部路径，`poss=nil` 时不打
   标记）。**非 cov 构建的 parser 输出与现在 byte 级一致**——bootstrap fixed point 不受影响，
   `parser-ast.ta` 文档测试不受影响。
 - 不选 VM 层方案（`TokEntry` 加 `line` 字段 + `vm.tok_line`）：编译器层能解决的事不下沉

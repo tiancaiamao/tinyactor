@@ -6,21 +6,23 @@
 //     ["name",  "<input source>",  "<expected AST>"]
 //
 // The expected column is the exact internal representation produced by
-// parser.parse(tokenizer.tokenize(src)), rendered canonically:
+// parser.parse_forms(tokenizer.tokenize(src)), rendered canonically:
 //
 //     int      -> 42             string  -> "hi"        (quoted, escapes decoded)
 //     symbol   -> name           nil     -> nil
 //     true     -> true           false   -> false
-//     list     -> (a b c)        dotted  -> (a . b)
+//     list     -> (a b c)        float   -> (float "1.5")
 //
-// The AST is plain cons-list data: function calls are lists headed by a
-// symbol, blocks are ('begin ...) / ('let ...) chains, match arms are
+// The AST is form.ta's `Form` (atom + list): function calls are lists headed
+// by a symbol, blocks are ('begin ...) / ('let ...) chains, match arms are
 // (pat [guard] body), etc. Read the rows below like a grammar table.
 //
 // Run:  ./tinyactor run test/compiler/parser-ast.ta
 // ============================================================================
 
 import "tinyactor:lib/str"
+import "tinyactor:lib/bootstrap/ast" as ast
+import "tinyactor:lib/bootstrap/form" as form
 import "tinyactor:lib/bootstrap/tokenizer"
 import "tinyactor:lib/bootstrap/parser"
 
@@ -28,7 +30,7 @@ import "tinyactor:lib/bootstrap/parser"
 
 fn parse_src(src) {
   let toks = tokenizer.tokenize(src)
-  parser.parse(toks)
+  parser.parse_forms(toks)
 }
 
 fn list_ref(lst, n) {
@@ -39,47 +41,46 @@ fn list_len(lst) {
   if null?(lst) { 0 } else { 1 + list_len(cdr(lst)) }
 }
 
-// Render an AST value into a canonical s-expression string.
-fn render(v) {
-  if int?(v) {
-    str.from_int(v)
-  } else {
-    if null?(v) {
-      "nil"
-    } else {
-      if v == true {
-        "true"
-      } else {
-        if v == false {
-          "false"
-        } else {
-          if string?(v) {
-            render_string(v)
-          } else {
-            if pair?(v) {
-              let inner = render_rest(cdr(v), render(car(v)))
-              str.concat("(", str.concat(inner, ")"))
-            } else {
-              str.sym_to_str(v)
-            }
-          }
-        }
-      }
-    }
+// Render a parsed program (List(Form)) into a canonical s-expression string.
+// 空程序照旧印 "nil"（旧渲染器收到的就是 nil）。
+fn render_program(forms : List(form.Form)) -> String {
+  if null?(forms) { "nil" } else { render_list(forms) }
+}
+
+// Render a form node. Lists are always proper in parser output (every list
+// goes through form.lst), so there is no dotted-tail branch to write.
+fn render(f : form.Form) -> String {
+  match f {
+    form.FAtom(c) -> render_atom(c)
+    form.FList(items) -> render_list(items)
   }
 }
 
-// Render a list tail: elements joined by " ", a non-nil non-pair tail is a
-// dotted pair: (a . b).
-fn render_rest(v, acc) {
-  if null?(v) {
+// render_list(items) — FList 恒非空（不变式 1），首个元素直接当种子。
+fn render_list(items : List(form.Form)) -> String {
+  str.concat("(", str.concat(render_items(cdr(items), render(car(items))), ")"))
+}
+
+// render_items(items, acc) — 余下元素逐个以 " " 接到 acc 后。
+fn render_items(items : List(form.Form), acc) -> String {
+  if null?(items) {
     acc
   } else {
-    if pair?(v) {
-      render_rest(cdr(v), str.concat(acc, str.concat(" ", render(car(v)))))
-    } else {
-      str.concat(acc, str.concat(" . ", render(v)))
-    }
+    render_items(cdr(items), str.concat(acc, str.concat(" ", render(car(items)))))
+  }
+}
+
+// 浮点在树里没有自己的原子形：库统一说成 (float "…")（ast.const_atom），
+// 渲染照抄这个说法，不再引入第二种拼法。
+fn render_atom(c : ast.Const) -> String {
+  match c {
+    ast.CInt(n) -> str.from_int(n)
+    ast.CStr(s) -> render_string(s)
+    ast.CSym(s) -> str.sym_to_str(s)
+    ast.CNil -> "nil"
+    ast.CTrue -> "true"
+    ast.CFalse -> "false"
+    ast.CFloat(text) -> str.concat("(float ", str.concat(render_string(text), ")"))
   }
 }
 
@@ -116,7 +117,7 @@ fn run_cases(cases, fails) {
     fails
   } else {
     let c = car(cases)
-    let actual = render(parse_src(list_ref(c, 1)))
+    let actual = render_program(parse_src(list_ref(c, 1)))
     if str.eq(actual, list_ref(c, 2)) {
       run_cases(cdr(cases), fails)
     } else {
@@ -133,7 +134,7 @@ fn print_fails(fails) {
     print(str.concat("  FAIL: ", list_ref(c, 0)))
     print(str.concat("    src     : ", list_ref(c, 1)))
     print(str.concat("    expected: ", list_ref(c, 2)))
-    print(str.concat("    actual  : ", render(parse_src(list_ref(c, 1)))))
+    print(str.concat("    actual  : ", render_program(parse_src(list_ref(c, 1)))))
     print_fails(cdr(fails))
   }
 }

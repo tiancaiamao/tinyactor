@@ -7,7 +7,7 @@
 //
 //     int -> 42        string -> "hi" (quoted, escapes re-encoded)
 //     symbol -> name   nil/true/false -> literals
-//     list -> (a b c)  dotted pair -> (a . b)
+//     list -> (a b c)  float -> (float "1.5")
 //
 // Usage:  ./tinyactor run tools/kernfuzz/ast-dump.ta <path.ta>
 //
@@ -23,50 +23,54 @@
 
 import "tinyactor:lib/file"
 import "tinyactor:lib/str"
+import "tinyactor:lib/bootstrap/ast" as ast
+import "tinyactor:lib/bootstrap/form" as form
 import "tinyactor:lib/bootstrap/tokenizer"
 import "tinyactor:lib/bootstrap/parser"
 import "tinyactor:lib/vm"
 
 // ---- rendering (replica of parser-ast.ta) ----------------------------------
 
-fn render(v) {
-  if int?(v) {
-    str.from_int(v)
-  } else {
-    if null?(v) {
-      "nil"
-    } else {
-      if v == true {
-        "true"
-      } else {
-        if v == false {
-          "false"
-        } else {
-          if string?(v) {
-            render_string(v)
-          } else {
-            if pair?(v) {
-              let inner = render_rest(cdr(v), render(car(v)))
-              str.concat("(", str.concat(inner, ")"))
-            } else {
-              str.sym_to_str(v)
-            }
-          }
-        }
-      }
-    }
+// Render a parsed program (List(Form)) into canonical s-expr text. Lists are
+// always proper in parser output (every list goes through form.lst), so there
+// is no dotted-tail branch to write.
+// 空程序照旧印 "nil"（旧渲染器收到的就是 nil）。
+fn render(forms : List(form.Form)) -> String {
+  if null?(forms) { "nil" } else { render_list(forms) }
+}
+
+fn render_node(f : form.Form) -> String {
+  match f {
+    form.FAtom(c) -> render_atom(c)
+    form.FList(items) -> render_list(items)
   }
 }
 
-fn render_rest(v, acc) {
-  if null?(v) {
+// render_list(items) — FList 恒非空（不变式 1），首个元素直接当种子。
+fn render_list(items : List(form.Form)) -> String {
+  str.concat("(", str.concat(render_items(cdr(items), render_node(car(items))), ")"))
+}
+
+// render_items(items, acc) — 余下元素逐个以 " " 接到 acc 后。
+fn render_items(items : List(form.Form), acc) -> String {
+  if null?(items) {
     acc
   } else {
-    if pair?(v) {
-      render_rest(cdr(v), str.concat(acc, str.concat(" ", render(car(v)))))
-    } else {
-      str.concat(acc, str.concat(" . ", render(v)))
-    }
+    render_items(cdr(items), str.concat(acc, str.concat(" ", render_node(car(items)))))
+  }
+}
+
+// 浮点在树里没有自己的原子形：库统一说成 (float "…")（ast.const_atom），
+// 渲染照抄这个说法，不再引入第二种拼法。
+fn render_atom(c : ast.Const) -> String {
+  match c {
+    ast.CInt(n) -> str.from_int(n)
+    ast.CStr(s) -> render_string(s)
+    ast.CSym(s) -> str.sym_to_str(s)
+    ast.CNil -> "nil"
+    ast.CTrue -> "true"
+    ast.CFalse -> "false"
+    ast.CFloat(text) -> str.concat("(float ", str.concat(render_string(text), ")"))
   }
 }
 
@@ -97,18 +101,22 @@ fn escape_range(s, i, n, acc) {
 
 // ---- error detection --------------------------------------------------------
 
-// find_parse_error(forms): return the embedded ('parse_error . msg) message,
-// or nil when the tree is clean. The marker can land at any depth, so scan
-// the whole tree. (Same semantics as driver.ta's find_parse_error.)
-fn find_parse_error(forms) {
-  if pair?(forms) == false {
+// find_parse_error(forms): return the embedded (parse_error msg tokpos)
+// message, or nil when the tree is clean. The marker can land at any depth,
+// so scan the whole tree. (Same semantics as driver.ta's find_parse_error.)
+fn find_parse_error(forms : List(form.Form)) {
+  if null?(forms) {
     nil
   } else {
-    if car(forms) == 'parse_error {
-      let msg = cdr(forms)
-      if string?(msg) { msg } else { nil }
+    let items = form.items(car(forms))
+    if form.is_sym(form.nth(items, 0), 'parse_error) {
+      // msg 不是字符串原子 → 不是真正的 marker（手写 / 坏树），当干净。
+      match form.nth(items, 1) {
+        form.FAtom(ast.CStr(msg)) -> msg
+        _ -> nil
+      }
     } else {
-      let fa = find_parse_error(car(forms))
+      let fa = find_parse_error(items)
       if null?(fa) { find_parse_error(cdr(forms)) }
       else { fa }
     }
@@ -207,7 +215,7 @@ fn dump(path) {
     let toks = tokenizer.tokenize(src);
     let serr = check_syntax(toks);
     if null?(serr) {
-      let forms = parser.parse(toks);
+      let forms = parser.parse_forms(toks);
       let perr = find_parse_error(forms);
       if null?(perr) {
         print(render(forms));
