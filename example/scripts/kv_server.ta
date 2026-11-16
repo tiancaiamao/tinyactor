@@ -6,7 +6,7 @@
 //   main ──spawn──► accept_loop   (rate-limited accept; spawns one handler per conn)
 //                     └── handler (parse HTTP, query current KV pid via supervisor)
 //
-// The KV actor holds the store as an association list ((key . value) ...).
+// The KV actor holds the store as an association list of Entry records.
 // All access goes through ADT-typed messages; a crash (see /crash) delivers
 // DOWN to the supervisor, which restarts it with an empty store — "let it
 // crash", state lives in the actor.
@@ -42,7 +42,7 @@ type KVReply {
   Hit(key, value)
   Miss(key)
   Done(key)
-  Size(n)
+  Count(n)
 }
 
 // Ask-the-supervisor message (ADT: the KV pid it carries is not listable
@@ -51,20 +51,44 @@ type SupMsg {
   GetKv(from)
 }
 
-// ---- association list helpers (store = ((key . value) ...)) ----
+// ---- association list helpers (store = List(Entry)) ----
 
-fn assoc_get(key: String, store) {
-  if null?(store) {
-    nil
-  } else {
-    let entry = car(store)
-    if str.eq(car(entry), key) { entry } else { assoc_get(key, cdr(store)) }
+// Entry: a key beside its value. A declared record, not a (key . value) dotted
+// pair — `cons` builds homogeneous lists, so "two different things in one slot"
+// needs its own type.
+type Entry {
+  Entry(key, value)
+}
+
+fn entry_key(e) {
+  match e {
+    Entry(k, _) -> k
   }
 }
 
-// assoc_set: prepend (key . value), dropping any previous entry with key.
+fn entry_val(e) {
+  match e {
+    Entry(_, v) -> v
+  }
+}
+
+// assoc_get: the entry for key, if the store has one.
+fn assoc_get(key: String, store) {
+  if null?(store) {
+    option.None
+  } else {
+    let entry = car(store)
+    if str.eq(entry_key(entry), key) {
+      option.Some(entry)
+    } else {
+      assoc_get(key, cdr(store))
+    }
+  }
+}
+
+// assoc_set: prepend Entry(key, value), dropping any previous entry with key.
 fn assoc_set(key: String, value: String, store) {
-  cons(cons(key, value), assoc_drop(key, store))
+  cons(Entry(key, value), assoc_drop(key, store))
 }
 
 fn assoc_drop(key: String, store) {
@@ -72,7 +96,7 @@ fn assoc_drop(key: String, store) {
     nil
   } else {
     let entry = car(store)
-    if str.eq(car(entry), key) {
+    if str.eq(entry_key(entry), key) {
       assoc_drop(key, cdr(store))
     } else {
       cons(entry, assoc_drop(key, cdr(store)))
@@ -85,17 +109,22 @@ fn list_length(lst) {
   else { 1 + list_length(cdr(lst)) }
 }
 
-// assoc_del: (found? . new_store)
+// Del: what assoc_del hands back — was the key there, and the new store.
+type Del {
+  Del(found, store)
+}
+
 fn assoc_del(key: String, store) {
   if null?(store) {
-    cons(0, nil)
+    Del(0, nil)
   } else {
     let entry = car(store)
-    if str.eq(car(entry), key) {
-      cons(1, cdr(store))
+    if str.eq(entry_key(entry), key) {
+      Del(1, cdr(store))
     } else {
-      let r = assoc_del(key, cdr(store))
-      cons(car(r), cons(entry, cdr(r)))
+      match assoc_del(key, cdr(store)) {
+        Del(found, rest) -> Del(found, cons(entry, rest))
+      }
     }
   }
 }
@@ -105,10 +134,9 @@ fn assoc_del(key: String, store) {
 fn kv_loop(store) {
   match recv() {
     Get(key, from) -> {
-      let hit = assoc_get(key, store)
-      match hit {
-        nil -> send(from, Miss(key))
-        _ -> send(from, Hit(key, cdr(hit)))
+      match assoc_get(key, store) {
+        option.Some(e) -> send(from, Hit(key, entry_val(e)))
+        option.None -> send(from, Miss(key))
       }
       kv_loop(store)
     }
@@ -117,16 +145,19 @@ fn kv_loop(store) {
       kv_loop(assoc_set(key, value, store))
     }
     Delete(key, from) -> {
-      let r = assoc_del(key, store)
-      if car(r) == 1 {
-        send(from, Done(key))
-      } else {
-        send(from, Miss(key))
+      match assoc_del(key, store) {
+        Del(found, rest) -> {
+          if found == 1 {
+            send(from, Done(key))
+          } else {
+            send(from, Miss(key))
+          }
+          kv_loop(rest)
+        }
       }
-      kv_loop(cdr(r))
     }
     Size(from) -> {
-      send(from, Size(list_length(store)))
+      send(from, Count(list_length(store)))
       kv_loop(store)
     }
     Crash -> {
@@ -170,7 +201,7 @@ fn get_kv(sup: Pid) -> Pid {
 }
 
 // ---- token bucket rate limiter ----
-// bucket = (tokens . last_check_ms); capacity 10, refill 5 tokens/second.
+// bucket = [tokens, last_check_ms]; capacity 10, refill 5 tokens/second.
 
 fn refill(bucket, now: Int) {
   let elapsed = now - car(cdr(bucket))
@@ -234,7 +265,7 @@ fn route(client: Int, sup: Pid, method: String, path: String, body: String) {
       if str.eq(path, "/stats") {
         send(get_kv(sup), Size(self()))
         match recv() {
-          Size(n) -> respond(client, 200, "text/plain",
+          Count(n) -> respond(client, 200, "text/plain",
                              str.concat("entries: ", str.from_int(n)))
                     _ -> respond(client, 500, "text/plain", "kv unavailable")
         }
