@@ -37,8 +37,8 @@ import "tinyactor:lib/result"
 import "tinyactor:lib/str"
 
 // Round: one hand-off message — who to answer, and the buffer it carries.
-// A declared record: a pid beside a resource are two different things, so
-// this is not a cons pair (and builtin Pair is on its way out).
+// A declared record: a pid and a resource are two different things, so the
+// message is a record rather than a cons chain.
 type Round {
   Round(from, buf)
 }

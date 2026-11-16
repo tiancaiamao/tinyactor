@@ -96,7 +96,7 @@ fn churn(n) {
   if n == 0 {
     0
   } else {
-    let g = Pair(n, n)
+    let g = [n, n]
     churn(n - 1)
   }
 }

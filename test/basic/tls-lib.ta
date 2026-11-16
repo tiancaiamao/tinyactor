@@ -186,15 +186,21 @@ fn scenario_stale() {
   f1 + f2 + f3
 }
 
-// Parse "host:port" from TA_TLS_TEST (last colon = separator, so IPv6
+// HostPort: the parsed "host:port" — a host name and a port number are two
+// different things, so they travel in a declared record, not a pair.
+type HostPort {
+  HostPort(host, port)
+}
+
+// Parse "host:port" from TA_TLS_TEST (colon = separator, so IPv6
 // hosts keep working).
 fn parse_host_port(spec) {
   let i = str.index_of(spec, ":")
   if i < 0 {
-    Pair("", -1)
+    HostPort("", -1)
   } else {
     let port = str.to_int(str.substr(spec, i + 1, str.length(spec) - i - 1))
-    Pair(str.substr(spec, 0, i), port)
+    HostPort(str.substr(spec, 0, i), port)
   }
 }
 
@@ -210,7 +216,7 @@ fn scenario_handshake() {
     option.Some(spec) -> {
       let hp = parse_host_port(spec)
       match hp {
-        Pair(host, port) ->
+        HostPort(host, port) ->
           if port < 0 {
             print("FAIL - TA_TLS_TEST needs host:port")
             1

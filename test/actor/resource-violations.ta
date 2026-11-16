@@ -98,12 +98,12 @@ fn main() {
   send(p4, b4)
   let k4 = ok("peek dies 'resource", await_death() == 1)
 
-  // 5. spawn duplicate capture: Pair(b, b) is fine in the offender's own
-  // heap (one header), but the spawn deep-copy walks the tree and hits
+  // 5. spawn duplicate capture: [b, b] is fine in the offender's own
+  // heap (one header), but the spawn deep-copy walks the list and hits
   // the same payload twice.
   let b5 = result.unwrap(buffer.new())
   let k5 = ok("spawn duplicate capture dies 'resource", spawn_offender(fn {
-    let double = Pair(b5, b5)
+    let double = [b5, b5]
     spawn(fn { car(double) })
   }) == 1)
 

@@ -25,7 +25,7 @@ source → tokenizer.tokenize → parser.parse_forms → typecheck.infer_program
 | 布尔 | `true`, `false` | — |
 | 符号 | `'foo` | 用 `quote` 构造，用于 ADT 变体和模式匹配 |
 | Nil | `nil` | 空值/空列表 |
-| List | `cons(1, nil)` | nil 结尾的 cons 链；**同构**（元素同型），`cons : a -> List(a) -> List(a)` |
+| List | `cons(1, cons(2, nil))` | nil 结尾的 cons 链（运行期每节是 pair tag）；**同构**（元素同型），`cons : a -> List(a) -> List(a)` |
 | Tuple | `tuple('Point, 1, 2)` | 定长扁平，`tuple-ref` O(1)；ADT 带参构造子的表示（见[「变体在运行时的表示」](#变体在运行时的表示)） |
 | 闭包 | `fn(x) { x }`, `fn { ... }` | — |
 | Pid | `spawn('worker)` | actor 进程标识符 |
@@ -190,7 +190,7 @@ a <> b == "abcdef"        // => (== (str.concat a b) "abcdef")，比 == / 比较
 5 |> double()        // => double(5)
 x |> f               // => f(x)            // 裸函数名
 5 |> add(3)          // => add(5, 3)
-1 |> Pair(2)         // => Pair(1, 2)      // 构造函数
+1 |> Foo(2)          // => Foo(1, 2)       // 构造函数（你自己声明的 type）
 5 |> f() |> g()      // => g(f(5))         // 左结合链式
 ```
 
@@ -497,7 +497,7 @@ fn find(key: String, binds: List(Bind)) -> Int {
 
 穷尽性检查是**充分**条件，不是完整判定。一个变体只在某个臂**整体**匹配它时才算
 被覆盖：臂在该变体的参数位置上是变量/通配符，或者参数本身是「唯一形态」构造子
-（单变体 ADT 如 `Buf(h)`、内置 `Pair(a, b)`）且其参数同样整体覆盖。参数位置上
+（单变体 ADT 如 `Buf(h)`）且其参数同样整体覆盖。参数位置上
 出现子模式（多变体 ADT 的构造子、字面量、列表形态）时，该变体只算被**部分**覆盖：
 
 ```ta
@@ -569,8 +569,8 @@ fn name(c : Color) -> Int {
 并且对每个构造子形态的名字（大写开头）取三条的**交集**才报：
 
 1. 不是 scrutinee 类型的变体；
-2. 不是内建类型名（`Int Float Bool String Nil Never Symbol Pair Pid`）——
-   `Pair(a, k) ->` 是合法模式，`Pair` 没有任何声明可查；
+2. 不是内建类型名（`Int Float Bool String Nil Never Symbol Pid`）—— 内建类型名
+   作为模式头也放行，它们没有任何声明可查；
 3. `env` 里没有任何构造子声明（嵌套位置的名字属于**它自己的**类型，不是 scrutinee 的：
    `Box(Pair(y))` 里的 `Pair`、`Ok(Some(x))` 里的 `Some` 都因此放行）。
 
@@ -956,7 +956,7 @@ fn add(x, y) { x + y }
 **命名规则（无例外）**：类型位置上的**首字母大写**标识符是**具体类型**——内建类型或已声明的
 ADT 名；**首字母小写**标识符是**类型变量**（隐式多态，可被推导/实例化为任意类型）。
 
-- 具体类型：内建 `Int`、`Float`、`String`、`Bool`、`Symbol`、`Pid`、`List`、`Pair`、
+- 具体类型：内建 `Int`、`Float`、`String`、`Bool`、`Symbol`、`Pid`、`List`、
   `Nil`、`Resource`（C 模块不透明资源值，见
   [「资源值的传递限制」](#资源值的传递限制resource)）、`Atom`（动态逃逸，见
   [「动态逃逸：Atom」](#动态逃逸atomissue-442)），以及用户声明的 ADT 名（如 `Color`）。
@@ -1244,7 +1244,7 @@ C 模块（`lib/<mod>.dylib` / `lib/<mod>.so`）的类型写在模块自己的�
 
 ```ta
 external fn demo.double(Int) -> Int                // 位置形式：只写类型
-external fn demo.pair(a : Int, b : Int) -> Pair    // 命名形式：参数名 : 类型
+external fn demo.list(a : Int, b : Int) -> List(Int) // 命名形式：参数名 : 类型
 ```
 
 两种写法**语义完全相同**：参数名只给读代码的人看，类型才是 call site 的检查
@@ -1328,7 +1328,7 @@ C 注册表不一致的项不存在：`net.*` 的元数在 `lib/net.c` 的 `TaFu
 
 `car`/`cdr` 只接受 cons cell —— **`Nil` 不是 cons cell**（issue #236）。能静态证明为 `Nil` 的实参
 （`nil` 字面量，或类型解析为 `Nil` 的值）在编译期就被拒（E0001「cannot unify Nil with
-List」）；只有运行期才出现的 `nil` 由 VM 以 `cartype`/`cdrtype` 隔离死亡（CRASH 报告带
+List('a)」）；只有运行期才出现的 `nil` 由 VM 以 `cartype`/`cdrtype` 隔离死亡（CRASH 报告带
 栈回溯）。历史上 `car(nil)` 静默返回 `nil`，于是 `if car(x) == 1 { ... }` 在 `x` 为 `nil`
 时恒走 else，错误在离根因很远的地方才表现出来。取嵌套列表的第 k 个元素请用 `nil` 安全的
 `list.nth`（`lib/list.ta`），不要写 `car(cdr(cdr(x)))`。

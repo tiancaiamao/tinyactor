@@ -3,7 +3,7 @@
 // Inspired by Cora's infer.cora. Pure functional, no mutable state.
 //
 // Type representation — two ADTs, destructured only by exhaustive match:
-//   type Base { BInt BFloat BBool BString BNil BNever BSymbol BPair BPid
+//   type Base { BInt BFloat BBool BString BNil BNever BSymbol BPid
 //               BName(name) }  — base types; BName holds every other
 //                                named type (user ADTs such as Option)
 //   type Ty {
@@ -65,7 +65,7 @@ fn list_union(a, b) {
 // ============================================================
 
 type Base {
-  BInt BFloat BBool BString BNil BNever BSymbol BPair BPid
+  BInt BFloat BBool BString BNil BNever BSymbol BPid
   BName(name : Symbol) // user ADT names (Option/P2...), unknown named types
 }
 
@@ -86,9 +86,8 @@ fn t_string() -> Ty { TyBase(BString) }
 fn t_never() -> Ty { TyBase(BNever) }
 fn t_symbol() -> Ty { TyBase(BSymbol) }
 fn t_nil() -> Ty { TyBase(BNil) }
-fn t_pair() -> Ty { TyBase(BPair) }
 
-// base_of_sym(name : Symbol) -> Base: symbol -> Base. The 9 builtins get
+// base_of_sym(name : Symbol) -> Base: symbol -> Base. The 8 builtins get
 // dedicated variants; anything else (user ADT names, malformed input)
 // falls to BName — the only place the builtin symbol table survives.
 fn base_of_sym(name : Symbol) -> Base {
@@ -99,7 +98,6 @@ fn base_of_sym(name : Symbol) -> Base {
   else if name == 'Nil { BNil }
   else if name == 'Never { BNever }
   else if name == 'Symbol { BSymbol }
-  else if name == 'Pair { BPair }
   else if name == 'Pid { BPid }
   else { BName(name) }
 }
@@ -115,7 +113,6 @@ fn base_name(b : Base) -> Symbol {
     BNil -> 'Nil
     BNever -> 'Never
     BSymbol -> 'Symbol
-    BPair -> 'Pair
     BPid -> 'Pid
     BName(name) -> name
   }
@@ -2386,9 +2383,10 @@ fn check_nil_pair_arg(arg : form.Form, arg_t : Ty, s : Subst, ctx : List(Symbol)
 }
 
 // Recorded as a plain type mismatch so E0001 renders where it belongs:
-// "in function 'f': arg 1 of car: cannot unify nil with pair".
+// "in function 'f': arg 1 of car: cannot unify Nil with List('a)".
+// 期望类型必须写成**具体**形态：`t_var` 那种自由变量会直接与 Nil 统一，诊断就没了。
 fn nil_pair_mismatch(s : Subst, ctx : List(Symbol)) -> Subst {
-  add_error(s, TcMismatch(ctx, t_nil(), t_pair()))
+  add_error(s, TcMismatch(ctx, t_nil(), t_app('List, cons(t_var(0, 0), nil))))
 }
 
 // infer_apply(fn_t, args, env, s, counter, level, ctx, head, idx) -> Inferred
@@ -2650,7 +2648,6 @@ fn base_form(b : Base) -> form.Form {
     BNil -> tag_form("BNil")
     BNever -> tag_form("BNever")
     BSymbol -> tag_form("BSymbol")
-    BPair -> tag_form("BPair")
     BPid -> tag_form("BPid")
   }
 }
@@ -2717,7 +2714,6 @@ fn base_of_named(name : Symbol) -> Base {
   else if s == "BNil" { BNil }
   else if s == "BNever" { BNever }
   else if s == "BSymbol" { BSymbol }
-  else if s == "BPair" { BPair }
   else if s == "BPid" { BPid }
   else { BNever }
 }
@@ -3175,20 +3171,9 @@ fn arg_covers_type(pat : form.Form, env) -> Int {
 
 // ctor_is_only_shape(c, env) -> 1 when every value of c's type is c, so the
 // pattern pins nothing beyond the shape: `Buf(h)` and `CompRes(code, ctx)` are
-// whole-type matches. Builtin `Pair` is single-shape for the same reason.
+// whole-type matches.
 fn ctor_is_only_shape(c, env) {
-  if c == 'Pair {
-    // Builtin pairs have exactly one shape. A user type may declare a
-    // variant that reuses the name (`type S { Pair(a) Other }`), so the
-    // shortcut is only safe while nothing in env binds `Pair` — otherwise
-    // fall through to that type's own variant list.
-    match ctor_binding('Pair, env) {
-      option.None -> 1
-      option.Some(_) -> ctor_type_is_single(c, env)
-    }
-  } else {
-    ctor_type_is_single(c, env)
-  }
+  ctor_type_is_single(c, env)
 }
 
 fn ctor_type_is_single(c, env) {
@@ -3457,8 +3442,8 @@ fn pat_ctor_names_list(pats : List(form.Form)) -> List(Symbol) {
   }
 }
 
-// is_builtin_type_name(name) -> 1 for the nine builtin type names. They are
-// legitimate pattern heads (`Pair(a, k) ->`) yet own no typedecl variant
+// is_builtin_type_name(name) -> 1 for the eight builtin type names. They are
+// legitimate pattern heads (`List(a) ->`) yet own no typedecl variant
 // list and no 'ctor entry, so the unknown-constructor test needs them as a
 // third source of legitimacy (issue #443).
 fn is_builtin_type_name(name : Symbol) -> Int {

@@ -2,11 +2,14 @@
 // exhaustiveness check (issue #396 counterpart of
 // exhaustiveness-nested-errors.ta). A payload pattern covers its type when it
 // is a binding/wildcard, or a constructor that is the only shape of its type
-// (single-variant ADT, builtin Pair) with covering arguments.
+// (single-variant ADT) with covering arguments.
 type Opt { Some(a) None }
 type Res { Ok(a) Err(b) }
 type Buf { Buf(h : Int) }
 type Step { Step(v : Opt, rest : Int) }
+// TwoHolds: the single-variant wrapper the Some(..) case below destructures —
+// a declared type, since the language has no builtin pair to nest.
+type TwoHolds { TwoHolds(a, b) }
 
 // Ok(v) / Err(e) — both payloads are bindings, so both variants are covered.
 fn res_or(x : Res, d) -> Int {
@@ -23,10 +26,10 @@ fn buf_len(b : Buf) -> Int {
   }
 }
 
-// Pair is a single-shape builtin, so Some(Pair(a, k)) covers Some.
+// TwoHolds is single-variant, so Some(TwoHolds(a, k)) covers Some.
 fn some_pair(o : Opt) -> Int {
   match o {
-    Some(Pair(a, k)) -> a
+    Some(TwoHolds(a, k)) -> a
     None -> 0
   }
 }
@@ -47,7 +50,7 @@ fn main() {
   print(str.from_int(res_or(Err("x"), 8)))
   print(str.from_int(buf_len(Buf(9))))
   print(str.from_int(some_pair(None)))
-  print(str.from_int(some_pair(Some(Pair(3, true)))))
+  print(str.from_int(some_pair(Some(TwoHolds(3, true)))))
   print(str.from_int(step_opt(Step(Some(4), 1))))
   print(str.from_int(step_opt(Step(None, 1))))
   print("PASS")
