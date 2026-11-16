@@ -25,7 +25,7 @@ source → tokenizer.tokenize → parser.parse_forms → typecheck.infer_program
 | 布尔 | `true`, `false` | — |
 | 符号 | `'foo` | 用 `quote` 构造，用于 ADT 变体和模式匹配 |
 | Nil | `nil` | 空值/空列表 |
-| Pair | `cons(1, 2)` | `(car . cdr)`，列表是 nil 结尾的嵌套 Pair |
+| List | `cons(1, nil)` | nil 结尾的 cons 链；**同构**（元素同型），`cons : a -> List(a) -> List(a)` |
 | Tuple | `tuple('Point, 1, 2)` | 定长扁平，`tuple-ref` O(1)；ADT 带参构造子的表示（见[「变体在运行时的表示」](#变体在运行时的表示)） |
 | 闭包 | `fn(x) { x }`, `fn { ... }` | — |
 | Pid | `spawn('worker)` | actor 进程标识符 |
@@ -390,7 +390,7 @@ Guard 表达式可以引用 pattern 中绑定的变量（`n when n > 0 -> ...`�
 | 符号字面量 | 精确匹配 | `'hello -> ...`、`'+ -> ...`（标点符号同样支持） |
 | `nil` | 匹配 nil | `nil -> ...` |
 | `true`/`false` | 匹配布尔 | `true -> ...` |
-| `cons(a, b)` | 解构 Pair，绑定 a/b | `cons(head, tail) -> ...` |
+| `cons(a, b)` | 解构列表 head/tail，绑定 a/b | `cons(head, tail) -> ...` |
 | `[a, b, c]` | 列表模式（语法糖） | `['DOWN, r, pid, reason] -> ...` |
 | `[a \| b]` | 列表 rest 模式：b 接在链尾，吸收剩余 spine | `[h \| t] -> ...` |
 | `Name(a, b)` | 构造子模式：首元素 `quote` 标签严格相等 + 逐参解构 + 尾 nil 钉死参数个数 | `Ok(v) -> ...` |
@@ -1052,7 +1052,7 @@ spawn 的函数在**新进程**中运行，有自己的栈和邮箱。
 // 发送任何值
 send(pid, 42)
 send(pid, 'hello)
-send(pid, cons('data, payload))
+send(pid, Msg('data, "hello", 1))   // 异构「记录」用声明的 record，见「列表」一节
 send(pid, ['DOWN, ref, dead_pid, reason])   // 列表语法
 
 // 邮箱是 FIFO，但 selective receive 可以跳过
@@ -1311,11 +1311,11 @@ C 注册表不一致的项不存在：`net.*` 的元数在 `lib/net.c` 的 `TaFu
 
 | 函数 | 说明 |
 |------|------|
-| `cons(a, b)` | 构造 Pair |
-| `car(p)` | Pair 的 car（`nil` 不是 Pair，见下） |
-| `cdr(p)` | Pair 的 cdr（同上） |
+| `cons(a, b)` | 构造列表（`a -> List(a) -> List(a)`；异构「记录」用声明的 record / ADT） |
+| `car(p)` | cons cell 的 head（`nil` 不是 cons cell，见下） |
+| `cdr(p)` | cons cell 的 tail（同上） |
 | `null?(x)` | 是否为 nil |
-| `pair?(x)` | 是否为 Pair |
+| `pair?(x)` | 是否为非空列表（cons cell） |
 | `tuple-ref(t, i)` | 元组第 i 个槽（O(1)；越界杀死当前进程） |
 | `tuple-len(t)` | 元组槽数 |
 | `tuple?(x)` | 是否为 Tuple |
@@ -1326,9 +1326,9 @@ C 注册表不一致的项不存在：`net.*` 的元数在 `lib/net.c` 的 `TaFu
 | `bool?(x)` | 是否为布尔 |
 | `print(x)` | 打印值 |
 
-`car`/`cdr` 只接受 Pair —— **`Nil` 不是 `Pair`**（issue #236）。能静态证明为 `Nil` 的实参
+`car`/`cdr` 只接受 cons cell —— **`Nil` 不是 cons cell**（issue #236）。能静态证明为 `Nil` 的实参
 （`nil` 字面量，或类型解析为 `Nil` 的值）在编译期就被拒（E0001「cannot unify Nil with
-Pair」）；只有运行期才出现的 `nil` 由 VM 以 `cartype`/`cdrtype` 隔离死亡（CRASH 报告带
+List」）；只有运行期才出现的 `nil` 由 VM 以 `cartype`/`cdrtype` 隔离死亡（CRASH 报告带
 栈回溯）。历史上 `car(nil)` 静默返回 `nil`，于是 `if car(x) == 1 { ... }` 在 `x` 为 `nil`
 时恒走 else，错误在离根因很远的地方才表现出来。取嵌套列表的第 k 个元素请用 `nil` 安全的
 `list.nth`（`lib/list.ta`），不要写 `car(cdr(cdr(x)))`。
@@ -1348,12 +1348,24 @@ Pair」）；只有运行期才出现的 `nil` 由 VM 以 `cartype`/`cdrtype` �
 | `str.to_sym(s)` | `String -> Symbol` | 字符串转符号 |
 | `str.sym_to_str(sym)` | `Symbol -> String` | 符号转字符串；运行时收到非 Symbol（仅可能经 FFI 边界进入）以 `'symtype` 原因杀死当前进程，不再静默返回 nil（#101） |
 
-### 列表（via Pair）
+### 列表
 
-列表是 `nil` 结尾的嵌套 Pair。没有内置 List 类型，用 `cons` + `nil` 构建：
+列表是 `nil` 结尾的嵌套 cons cell。用 `cons` + `nil` 构建，或直接写字面量：
 
 ```ta
 let lst = cons(1, cons(2, cons(3, nil)))   // [1, 2, 3]
+```
+
+**`cons` 只建同构列表**：`cons` 的签名是 `a -> List(a) -> List(a)`，元素与尾巴的元素必须同型。
+想要「带标签 + 不同类型字段」的值，就用**声明出来的** record / ADT——字段按位置存在
+ tuple 里、`tuple-ref` O(1) 取，形状写在类型定义里而不是脑子里：
+
+```ta
+type Msg {
+  Msg(tag : Symbol, body : String, n : Int)
+}
+
+send(pid, Msg('data, "hello", 1))
 ```
 
 **列表字面量的类型规则**：`[a, b, c]` 是语法糖，解析为 `(list a b c)` 特殊形式
@@ -1367,9 +1379,6 @@ typecheck 要求列表字面量的**所有元素类型互相统一**，异构列
 [1, "a"]         // type error: cannot unify Int with String
 ["kernfuzz", true]  // type error: cannot unify String with Bool
 ```
-
-手写 `cons(h, t)` 保持异构 Pair 语义（`a -> b -> b`），不受此规则约束——
-`cons` 是原始 Pair 构造器，标准库大量依赖 `('tag . payload)` 结构。
 
 ---
 
@@ -1576,14 +1585,9 @@ lisp-backend: typecheck
 ### `List(a)` 的边界
 
 `List(a)` **是**一等类型，可用于注解、会出现在错误信息里；列表字面量 `[1, 2, 3]`
-推导为 `List(Int)`。两个缺口：
+与 `cons(1, cons(2, nil))` 都推导为 `List(Int)`。一个缺口：
 
-- **`cons` 不产生 `List(E)`**：内置签名是 `forall(a b, a -> b -> b)`（返回值取尾部
-  的类型），所以 `cons(1, nil)` 推导为自由 tvar 而不是 `List(Int)`。要拿到精确类型
-  用字面量；这也是 `fn make_list() { cons(1, nil) }` 推导不出 `List(Int)` 的原因。
-  同一个错误实参，写成 `f([1])` 会报 `cannot unify List(String) with List(Int)`，
-  写成 `f(cons(1, nil))` 不报——注解的强度取决于字面量还是 `cons`。
-- **动态访问器只能写 `'a`**：`list.nth` / `car` / `cdr` 服务的是「pair 或原子」这
+- **动态访问器只能写 `'a`**：`list.nth` / `car` / `cdr` 服务的是「cons cell 或原子」这
   种联合形状，注解 `List(a)` 会把合法的动态调用（编译器 AST walker、`lib/sexp.ta`、
   `lib/json.ta`）判成错误，因此它们的实参保持 `'a`、返回保持自由 `'b`。
 
@@ -1591,7 +1595,8 @@ lisp-backend: typecheck
 
 `nil` 在类型系统中推导为 fresh tvar（`'b`），既是空值又是空列表。HM 无法区分：
 - `fn f() { nil }` → `'a -> 'b`（返回值是什么类型？任意）
-- `fn make_list() { cons(1, nil) }` → `'a -> 'b`（`cons` 取尾部类型，见上一节）
+- `fn empty_list() { nil }` 同理；但要拿到精确类型写成 `fn empty_list() -> List(Int) { nil }`
+  （`cons(1, nil)` 本身已经是 `List(Int)`，不必靠注解）。
 
 对比 Gleam：没有 `nil`，用 `Result(a, b)` / `Option(a)` 代替，List 有明确的 `List(a)` 类型。
 
