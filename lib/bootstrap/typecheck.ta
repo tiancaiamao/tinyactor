@@ -3018,14 +3018,6 @@ pub fn label_slot(label : Symbol, slots : List(LabelSlot)) -> option.Option(Int)
   }
 }
 
-// record_table(name, tables) — 按构造子名查字段表（driver 位置化记录构造用）。
-pub fn record_table(name : Symbol, tables : List(VariantTable)) -> option.Option(VariantTable) {
-  match tables {
-    nil -> option.None
-    cons(t, rest) -> if vt_name(t) == name { option.Some(t) } else { record_table(name, rest) }
-  }
-}
-
 // variant_names(variants : List(form.Form)) -> list of constructor name symbols
 // Each variant is (quote V) for nullary or (Ctor f1 f2 ...) for n-ary.
 fn variant_names(variants : List(form.Form)) -> List(Symbol) {
