@@ -71,7 +71,7 @@ pub fn parse_module_content(content, path, use_ta, with_cov) {
     let poss = cdr(tp)
     let err = check_syntax(toks, poss, content)
     if null?(err) {
-            // parser 的两个入口，都直接产 form.Form 树（本层不经过未类型化副本）。
+      // parser 的两个入口，都直接产 form.Form 树（本层不经过未类型化副本）。
       let result = if with_cov == 1 {
         parser.parse_forms_cov(toks, poss, path)
       } else {
@@ -2526,8 +2526,8 @@ fn compile_ta(src, out, cache_dir, emit_kl, emit_kl_dir, with_cov) {
   // 源树侧不再有 Form → 未类型化的转换（只剩 C 边界那一处 from_untyped）。
   let wrapped = if with_cov == 1 {
     let ir = covinst.instrument(expanded)
-    covinst.write_covmap(str.concat(out, ".covmap"), cdr(ir))
-    car(ir)
+    covinst.write_covmap(str.concat(out, ".covmap"), covinst.inst_rows(ir))
+    covinst.inst_forms(ir)
   } else {
     expanded
   }

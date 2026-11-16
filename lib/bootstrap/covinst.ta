@@ -30,6 +30,10 @@
 // name/file 是文本、line 是 int），不是树，故不进 Form，只在写 .covmap 时
 // 按位置读一次。
 //
+// 行表与三个中间结果都是**具名 record**（tag + 字段 tuple，见 D15/D16），
+// 不再用 `(k . (name . ...))` 的点对链：槽位有名字，`tuple-ref` 是 O(1)，
+// 少一层括号就少一次数括号。
+//
 // Phase 2 (statement / match-arm rows, `k file:line name`) is done.
 // Phase 3 (SBCL-style entered-but-not-taken third state) is planned, not
 // implemented — see docs/coverage-design.md.
@@ -39,10 +43,30 @@ import "tinyactor:lib/file"
 import "tinyactor:lib/bootstrap/ast" as ast
 import "tinyactor:lib/bootstrap/form" as form
 
-// instrument(forms) -> (instrumented_forms . entries)
-// entries: ((k name file line) ...) in instrument order;
-// line 0 = fn entry, line > 0 = statement / arm body.
-pub fn instrument(forms : List(form.Form)) {
+// CovRow — 一行 covmap：id（0 = 函数入口）、归属名、源文件、源行。
+type CovRow {
+  CovRow(id : Int, name : String, file : String, line : Int)
+}
+
+// Inst — instrument 的产品：插桩后的程序树 + 行表。
+type Inst {
+  Inst(forms : List(form.Form), rows : List(CovRow))
+}
+
+// Rw — 「重写一个节点」的三样产出：新节点、下一个可用 id、已累积的行表（逆序）。
+type Rw {
+  Rw(node : form.Form, next_k : Int, rows : List(CovRow))
+}
+
+// RwItems — rw_list 的产出：新**元素表**（装箱由调用点做）加同上两样。
+type RwItems {
+  RwItems(items : List(form.Form), next_k : Int, rows : List(CovRow))
+}
+
+// instrument(forms) -> Inst
+// Inst.rows 按仪器化顺序（`covmap_rows` 再排回正序）；
+// line 0 = fn entry，line > 0 = statement / arm body。
+pub fn instrument(forms : List(form.Form)) -> Inst {
   inst_loop(forms, 0, nil, nil)
 }
 
@@ -50,27 +74,31 @@ fn rev(xs, acc) {
   if null?(xs) { acc } else { rev(cdr(xs), cons(car(xs), acc)) }
 }
 
-// ---- 三元组读法（新节点 . (下一个 k . 行表)) ----
-//
-// rw / rw_list 一次交出三样东西：重写后的节点、下一个可用 id、累积的行表。
-// 三者不同型（Form / Int / 行表），HM 里没有元组可写，故按槽位读——每个读法
-// 只认一个槽，名字说明读到的是什么。
-fn rw_form(r) -> form.Form { car(r) }
+// ---- 产出的读法（模式匹配一次，名字说明读到的是什么） ----
+pub fn inst_forms(ir : Inst) -> List(form.Form) { match ir { Inst(fs, _) -> fs } }
 
-fn rw_items(r) -> List(form.Form) { car(r) }
+pub fn inst_rows(ir : Inst) -> List(CovRow) { match ir { Inst(_, rs) -> rs } }
 
-fn rw_k(r) -> Int { car(cdr(r)) }
+fn rw_node(r : Rw) -> form.Form { match r { Rw(n, _, _) -> n } }
 
-fn rw_rows(r) { cdr(cdr(r)) }
+fn rw_next(r : Rw) -> Int { match r { Rw(_, k, _) -> k } }
+
+fn rw_rows(r : Rw) -> List(CovRow) { match r { Rw(_, _, e) -> e } }
+
+fn items_of(r : RwItems) -> List(form.Form) { match r { RwItems(xs, _, _) -> xs } }
+
+fn items_next(r : RwItems) -> Int { match r { RwItems(_, k, _) -> k } }
+
+fn items_rows(r : RwItems) -> List(CovRow) { match r { RwItems(_, _, e) -> e } }
 
 // hit_form(k) — (cov.hit k)：计数器自增点的调用形（lower 之后就是普通调用）。
 fn hit_form(k : Int) -> form.Form {
   form.lst([form.sym('cov.hit), form.FAtom(ast.CInt(k))])
 }
 
-fn inst_loop(forms : List(form.Form), k, facc, eacc) {
+fn inst_loop(forms : List(form.Form), k, facc, eacc) -> Inst {
   if null?(forms) {
-    cons(rev(facc, nil), rev(eacc, nil))
+    Inst(rev(facc, nil), rev(eacc, nil))
   } else {
     let form0 = car(forms)
     let items = form.items(form0)
@@ -82,12 +110,12 @@ fn inst_loop(forms : List(form.Form), k, facc, eacc) {
       let instrumented = form.lst(cons(form.sym('begin),
       cons(hit_form(k), cdr(cdr(items)))))
       let rb = rw(instrumented, name, k + 1, nil)
-      let new_form = form.lst([form.nth(items, 0), form.nth(items, 1), rw_form(rb)])
+      let new_form = form.lst([form.nth(items, 0), form.nth(items, 1), rw_node(rb)])
       let rows = rw_rows(rb)
       let efile = if null?(rows) { "" } else { row_file(car(rows)) }
-      let entry = cons(k, cons(name, cons(efile, cons(0, nil))))
+      let entry = CovRow(k, name, efile, 0)
       let eacc2 = rev(cons(entry, rows), eacc)
-      inst_loop(cdr(forms), rw_k(rb),
+      inst_loop(cdr(forms), rw_next(rb),
       cons(new_form, facc), eacc2)
     } else {
       // Non-define top-level forms can still carry markers (e.g. a lambda
@@ -96,51 +124,49 @@ fn inst_loop(forms : List(form.Form), k, facc, eacc) {
       let name = if form.is_sym(form.nth(items, 0), 'const) { sym_str(form.nth(items, 1)) } else { "" }
       let rb = rw(form0, name, k, nil)
       let eacc2 = rev(rw_rows(rb), eacc)
-      inst_loop(cdr(forms), rw_k(rb), cons(rw_form(rb), facc), eacc2)
+      inst_loop(cdr(forms), rw_next(rb), cons(rw_node(rb), facc), eacc2)
     }
   }
 }
 
-// rw(e, fname, k, acc) -> (new_e . (next_k . entries_rev)).
+// rw(e, fname, k, acc) -> Rw.
 // Generic rewrite: recurse into every subform; a marker
 // (begin (cov.line f l) s) becomes (begin (cov.hit k) s) and records
 // (k fname f l). Everything else is rebuilt unchanged — match arm
 // triples and pattern data cannot contain a marker, and the marker
 // shape (begin with a cov.line call as its sole first element) does not
 // occur in user code.
-fn rw(e : form.Form, fname : String, k : Int, acc) {
+fn rw(e : form.Form, fname : String, k : Int, acc : List(CovRow)) -> Rw {
   match e {
-    form.FAtom(_) -> cons(e, cons(k, acc))
+    form.FAtom(_) -> Rw(e, k, acc)
     form.FList(items) -> {
       if is_marker(e) {
         let loc = form.nth(items, 1)
         // the marker consumes id k; nested markers start allocating at k + 1
         let rs = rw(form.nth(items, 2), fname, k + 1, acc)
-        let inner = form.lst([form.sym('begin), hit_form(k), rw_form(rs)])
-        let row = cons(k, cons(fname,
-        cons(loc_path(loc), cons(loc_line(loc), nil))))
-        let acc2 = cons(row, rw_rows(rs))
-        cons(inner, cons(rw_k(rs), acc2))
+        let inner = form.lst([form.sym('begin), hit_form(k), rw_node(rs)])
+        let row = CovRow(k, fname, loc_path(loc), loc_line(loc))
+        Rw(inner, rw_next(rs), cons(row, rw_rows(rs)))
       } else {
         // 元素表要装回 FList 才算树节点（form.lst 是唯一的装箱点）。
         let r = rw_list(items, fname, k, acc)
-        cons(form.lst(rw_items(r)), cons(rw_k(r), rw_rows(r)))
+        Rw(form.lst(items_of(r)), items_next(r), items_rows(r))
       }
     }
   }
 }
 
-// rw_list(xs, fname, k, acc) -> (new_items . (next_k . entries_rev)).
+// rw_list(xs, fname, k, acc) -> RwItems
 // 交出的是**元素表**，装箱由调用点做（FList 只在节点这一层存在）。
-fn rw_list(xs : List(form.Form), fname : String, k : Int, acc) {
+fn rw_list(xs : List(form.Form), fname : String, k : Int, acc : List(CovRow)) -> RwItems {
   if null?(xs) {
-    cons(nil, cons(k, acc))
+    RwItems(nil, k, acc)
   } else {
     let h = rw(car(xs), fname, k, acc)
-    let t = rw_list(cdr(xs), fname, rw_k(h), rw_rows(h))
-    // t = (new_tail . (k . acc)) — keep only the tail items, not the
-    // (k . acc) spine (consing t itself would splice k/acc into the tree).
-    cons(cons(rw_form(h), rw_items(t)), cons(rw_k(t), rw_rows(t)))
+    let t = rw_list(cdr(xs), fname, rw_next(h), rw_rows(h))
+    // t 只贡献尾元素表与推进后的 k / 行表；把 t 整个拼进元素表会把
+    // 旁路状态混进树里。
+    RwItems(cons(rw_node(h), items_of(t)), items_next(t), items_rows(t))
   }
 }
 
@@ -196,8 +222,8 @@ fn loc_line(loc : form.Form) -> Int {
   }
 }
 
-// row_file(row) — 行表是旁路状态 (k name file line)，按位置读。
-fn row_file(row) { car(cdr(cdr(row))) }
+// row_file(row) — 函数入口行的源文件（取自已插桩语句的第一行）。
+fn row_file(row : CovRow) -> String { match row { CovRow(_, _, f, _) -> f } }
 
 // write_covmap(path, entries): one "k file:line name" row per id;
 // line 0 marks a function entry.
@@ -205,23 +231,27 @@ fn row_file(row) { car(cdr(cdr(row))) }
 // Rows are built first and joined once: accumulating rows with str.concat
 // is quadratic in the row count, and the image being instrumented is the
 // 292 KB bootstrap driver — tens of thousands of rows.
-pub fn write_covmap(path, entries) {
+pub fn write_covmap(path, entries : List(CovRow)) {
   file.write(path, str.join(covmap_rows(entries, nil), ""))
 }
 
-fn covmap_rows(entries, acc) {
+fn covmap_rows(entries : List(CovRow), acc) {
   if null?(entries) {
     rev(acc, nil)
   } else {
-    let e = car(entries)
-    let row = str.concat(str.from_int(car(e)),
-    str.concat(" ", str.concat(entry_loc(e),
-    str.concat(" ", str.concat(car(cdr(e)), "\n")))))
+    let row = str.concat(str.from_int(row_id(car(entries))),
+    str.concat(" ", str.concat(entry_loc(car(entries)),
+    str.concat(" ", str.concat(row_name(car(entries)), "\n")))))
     covmap_rows(cdr(entries), cons(row, acc))
   }
 }
 
-fn entry_loc(e) {
-  str.concat(car(cdr(cdr(e))),
-  str.concat(":", str.from_int(car(cdr(cdr(cdr(e)))))))
+fn row_id(row : CovRow) -> Int { match row { CovRow(k, _, _, _) -> k } }
+
+fn row_name(row : CovRow) -> String { match row { CovRow(_, n, _, _) -> n } }
+
+fn row_line(row : CovRow) -> Int { match row { CovRow(_, _, _, l) -> l } }
+
+fn entry_loc(row : CovRow) -> String {
+  str.concat(row_file(row), str.concat(":", str.from_int(row_line(row))))
 }
