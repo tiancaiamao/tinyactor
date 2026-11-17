@@ -45,8 +45,10 @@ type Buffer {
 external fn buffer.raw_new() -> Resource
 external fn buffer.raw_push_str(h, s) -> Int
 external fn buffer.raw_push_byte(h, n) -> Int
-external fn buffer.raw_to_string(h) -> a
-external fn buffer.raw_slice(h, start, end) -> a
+// h is a Resource (raw_new returns one; wrappers unwrap Buf(h)); returns
+// stay a: to_string/slice are String|-1/-2 (string? dispatch below).
+external fn buffer.raw_to_string(h : Resource) -> a
+external fn buffer.raw_slice(h : Resource, start : Int, end : Int) -> a
 external fn buffer.raw_close(h) -> Int
 external fn buffer.raw_length(h) -> Int
 

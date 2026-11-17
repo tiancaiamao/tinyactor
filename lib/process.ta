@@ -59,7 +59,9 @@ type Proc {
   P(Resource)
 }
 
-external fn process.raw_run(cmd, argv) -> a
+// raw_run returns Resource | -1 (int? dispatches below) — no TA union
+// type, so keep return loose; params are precise: cmd String, argv List(String).
+external fn process.raw_run(cmd : String, argv : List(String)) -> a
 external fn process.raw_stdin_w(h) -> Int
 external fn process.raw_stdout_r(h) -> Int
 external fn process.raw_wait(h) -> Int

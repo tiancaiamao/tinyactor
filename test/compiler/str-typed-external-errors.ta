@@ -1,0 +1,37 @@
+// str-typed-external-errors.ta — NEGATIVE test: upper str functions carry
+// precise external-fn signatures (lib/str.ta). Before the signature layer
+// was tightened, these were declared `-> a` with bare params, so a wrong
+// argument type compiled and silently produced "" / [] at runtime.
+// Each case in its own function so one error cannot mask another (issue #90).
+// Expected: rejected by typecheck.
+// expect: of str.join: cannot unify
+
+import "tinyactor:lib/str"
+
+fn join_int_list() {
+  str.join([1, 2], "-")
+}
+
+fn split_non_string_sep() {
+  str.split("a:b", 1)
+}
+
+fn pad_float_width() {
+  str.pad_start("42", 5.0, 48)
+}
+
+fn from_base_bad_base_type() {
+  str.from_base("ff", "16")
+}
+
+fn to_base_string_n() {
+  str.to_base("255", 16)
+}
+
+fn index_of_ctrl_float_start() {
+  str.index_of_ctrl("a", 0.0)
+}
+
+fn trim_int() {
+  str.trim(42)
+}

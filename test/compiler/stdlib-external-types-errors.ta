@@ -1,0 +1,37 @@
+// stdlib-external-types-errors.ta — NEGATIVE test: stdlib `external fn`
+// declarations carry precise types (lib/{encoding,file,random,os}.ta), so
+// wrong argument types at user call sites are E0001 — not silent runtime
+// sentinel values. Before tightening these were `-> a` with bare params:
+// `encoding.encode(42)` compiled and produced -1 at runtime.
+// Each case in its own function so one error cannot mask another (issue #90).
+// Expected: rejected by typecheck.
+// expect: of encoding.encode: cannot unify
+
+import "tinyactor:lib/encoding"
+import "tinyactor:lib/result"
+import "tinyactor:lib/file"
+import "tinyactor:lib/random"
+
+fn encode_int() {
+  encoding.encode(42)
+}
+
+fn hex_decode_param() {
+  encoding.hex_decode(123)
+}
+
+fn list_dir_int() {
+  file.list_dir(42)
+}
+
+fn stat_float() {
+  file.stat(3.5)
+}
+
+fn rand_int_string() {
+  random.raw_rand_int("10")
+}
+
+fn rand_float_arg() {
+  random.raw_rand_float(1)
+}
