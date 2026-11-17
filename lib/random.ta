@@ -32,9 +32,12 @@ import "tinyactor:lib/list"
 import "tinyactor:lib/option"
 import "tinyactor:lib/result"
 
-external fn random.raw_srand(seed) -> a
-external fn random.raw_rand_int(n) -> a
-external fn random.raw_rand_float() -> a
+// C signatures (lib/random.c): srand(Int)->Nil|-1 (mixed sentinel,
+// keep return loose), rand_int(Int)->Int (both draw and -1 error are Int),
+// rand_float()->Float.
+external fn random.raw_srand(seed : Int) -> a
+external fn random.raw_rand_int(n : Int) -> Int
+external fn random.raw_rand_float() -> Float
 
 // srand: pass-through; there is no failure path for an int seed (the C
 // side signals -1 on a non-int argument, but the typechecked `external

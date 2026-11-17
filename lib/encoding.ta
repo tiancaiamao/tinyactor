@@ -33,14 +33,17 @@
 //                                         form-encoding variant)
 import "tinyactor:lib/result"
 
-external fn encoding.raw_b64_encode(s) -> a
-external fn encoding.raw_b64_decode(s) -> a
-external fn encoding.raw_b64_url_encode(s) -> a
-external fn encoding.raw_b64_url_decode(s) -> a
-external fn encoding.raw_hex_encode(s) -> a
-external fn encoding.raw_hex_decode(s) -> a
-external fn encoding.raw_pct_encode(s) -> a
-external fn encoding.raw_pct_decode(s) -> a
+// C signatures (lib/encoding.c header): all take String; encode returns
+// String, decode returns String | -1 (the -1 sentinel is lifted to Result
+// below; literal patterns do not constrain scrutinee type in this checker).
+external fn encoding.raw_b64_encode(s : String) -> String
+external fn encoding.raw_b64_decode(s : String) -> String
+external fn encoding.raw_b64_url_encode(s : String) -> String
+external fn encoding.raw_b64_url_decode(s : String) -> String
+external fn encoding.raw_hex_encode(s : String) -> String
+external fn encoding.raw_hex_decode(s : String) -> String
+external fn encoding.raw_pct_encode(s : String) -> String
+external fn encoding.raw_pct_decode(s : String) -> String
 
 // base64: encode side, no error path.
 pub fn encode(s) {

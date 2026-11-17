@@ -14,30 +14,30 @@
 //     always available WITHOUT `import str` and are deliberately NOT
 //     redeclared here — an external-fn signature would shadow the precise
 //     promise type with a permissive one.
-//   * Upper functions (the list below): declared here via `external fn`;
-//     they require `import str`. Types are intentionally permissive
-//     (-> a), matching the pre-sink builtin behavior (no promise) exactly
-//     — zero type regression; tightening them is a separate change.
-//
-// No Result/Option lift layer is needed: every function returns its raw
-// value (parse_float returns Some/None directly from C, the same runtime
-// shape as option.ta's constructors). This file is purely the signature
-// layer that makes `import str` resolve the upper functions at typecheck
-// time.
+//   * Upper functions (the list below): declared here via `external fn`.
+//     They require `import str`. Parameter/return types follow the C
+//     implementation (lib/str.c header + bodies) and the existing test
+//     corpus — stdlib is the type-sample users copy, so these are as
+//     precise as a bare HM signature can be. Where a value has no TA
+//     type (C opaque handles, pair cells) or a parameter is legitimately
+//     multi-typed (from_float widens Int|Float), that slot stays a tvar.
 
-external fn str.split(s, sep) -> a
-external fn str.pairs(s, line_sep, kv_sep) -> a
-external fn str.join(lst, sep) -> a
-external fn str.trim(s) -> a
-external fn str.replace(s, old, new) -> a
-external fn str.upper(s) -> a
-external fn str.lower(s) -> a
-external fn str.pad_start(s, n, ch) -> a
-external fn str.pad_end(s, n, ch) -> a
-external fn str.parse_float(s) -> a
-external fn str.from_float(f) -> a
-external fn str.from_base(s, base) -> a
-external fn str.to_base(n, base) -> a
-external fn str.index_of_char(s, i, c) -> a
-external fn str.index_of_ctrl(s, i) -> a
+external fn str.split(s : String, sep : String) -> List(String)
+// pairs returns a list of (key . value) pair cells; TA has no Pair type
+// (D15), and the cell is consumed positionally via car/cdr. Inputs typed.
+external fn str.pairs(s : String, line_sep : String, kv_sep : String) -> a
+external fn str.join(lst : List(String), sep : String) -> String
+external fn str.trim(s : String) -> String
+external fn str.replace(s : String, old : String, new : String) -> String
+external fn str.upper(s : String) -> String
+external fn str.lower(s : String) -> String
+external fn str.pad_start(s : String, n : Int, ch : Int) -> String
+external fn str.pad_end(s : String, n : Int, ch : Int) -> String
+external fn str.parse_float(s : String) -> option.Option(Float)
+// from_float accepts Int (widened) as well as Float; no TA union type.
+external fn str.from_float(f) -> String
+external fn str.from_base(s : String, base : Int) -> Int
+external fn str.to_base(n : Int, base : Int) -> String
+external fn str.index_of_char(s : String, i : Int, c : Int) -> Int
+external fn str.index_of_ctrl(s : String, i : Int) -> Int
 external fn str.cmp(a : String, b : String) -> Int

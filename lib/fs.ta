@@ -25,12 +25,14 @@
 
 import "tinyactor:lib/result"
 
+// See lib/file.ta for the C signatures these mirror: List(String)/String/
+// List(Int) success shapes, -1 sentinel lifted to Result below.
 external fn file.mkdir_p(String) -> Int
-external fn file.list_dir(String) -> a
+external fn file.list_dir(String) -> List(String)
 external fn file.remove(String) -> Int
 external fn file.rename(String, String) -> Int
-external fn file.cwd() -> a
-external fn file.stat(String) -> a
+external fn file.cwd() -> String
+external fn file.stat(String) -> List(Int)
 
 pub fn mkdir_p(path) {
   file.mkdir_p(path)
