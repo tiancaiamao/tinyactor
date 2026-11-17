@@ -62,7 +62,7 @@ fn main() {
 ```ta
 import "tinyactor:lib/list" as list    // 模块引入（§11）
 pub fn f(x) { … }                      // 函数（pub = 跨模块导出）
-type Ctor { … }                        // ADT 声明（§5.3）
+type Ctor { … }                        // ADT 声明（§5.2）
 const LIMIT = 10                       // 常量（一律导出）
 ```
 
@@ -208,7 +208,7 @@ fn main() {
   nil 安全、越界返回 nil。不要写 `car(cdr(cdr(x)))`。
 - 遍历先判 `null?`/`cons?`（模式匹配写法见 §5）。
 - 列表的构造子形态是 `nil` 与 `cons`，所以 `match [h | t] -> …` 与
-  `match cons(h, t) -> …` 等价（§5.2）。
+  `match cons(h, t) -> …` 等价（§5.3）。
 
 ---
 
@@ -236,7 +236,65 @@ fn main() {
 }
 ```
 
-### 5.2 模式匹配 `match`
+### 5.2 ADT 声明
+
+```ta
+type Color { Red; Green; Blue }
+type Option { None; Some(value) }
+type Rat { R(num : Int, den : Int) }      // 标签字段（可选）
+```
+
+- 变体之间用 `;` 分隔，可换行，末项 `;` 可省
+- 零参变体的值就是符号（`Red` → `'Red`）；带参变体的值是**定长扁平 tuple**
+  （`Some(42)` 第 0 槽是符号 `'Some`，其余是字段）
+- **字段可以带标签**（`R(num : Int, …)`）：调用处可按名传参、顺序任意、
+  可用 `..base` 更新（§5.2.1）。不带标签的字段只能按位置传
+- **泛型：显式声明类型参数表**。参数**按名**代入字段类型——
+  参数 `a` 替换所有字段类型里出现的裸名 `a`：
+
+```ta
+type Option(t) { None; Some(value) }
+type L(a, b) { L(x : a, y : b) }        // 字段标签可选
+
+// L(1, "s") → L(Int, String)
+// type M(a, b) { M(x : b, y : a) } 里 M("s", 1) → M(Int, String)
+// （字段 x 的类型是 b=Int，字段 y 的类型是 a=String）
+```
+
+- **未注解的字段按位置绑参数**：`Option(t) { Some(value) }` 里 `value`
+  的类型就是 `t`（`Option(Int)` 的 `Some(5)` 载荷是 Int）——
+  这就是标准库 `Option`/`Result`/`list` 的写法
+
+  隐式小写字段（无参数表）的字段类型**不在变体之间统一**——
+  `type M { Ping(from); Pong(to) }` 里 `from`/`to` 各自独立推导，
+  使用点推成什么就是什么（Pid、Int 都行）；想要共享类型用显式参数表
+
+- 隐式小写字段（`type R { Ok(v); Err(e) }`，**没有**参数表）也能推导，
+  但**该 ADT 不能在注解处应用类型**（`R(Int, String)` 会报 cannot unify）——
+  要注解就用显式参数表，要省事就全程裸名（§6.6）
+- **递归 ADT** 合法：`type Tree { Leaf; Node(l, v, r) }`
+- 跨模块引用：类型名、构造子名都是模块成员，必须带前缀（§9.2）
+
+#### 5.2.1 按标签构造与更新
+
+```ta
+type Rat { R(num : Int, den : Int) }
+
+R(3, 4)             // 位置
+R(num: 3, den: 4)   // 按名
+R(den: 4, num: 3)   // 名字寻址，顺序任意
+let half = R(1, 2)
+R(..half, num: 5)   // 更新：拷贝 half 全部字段，替换点名的 → R(5, 2)
+```
+
+- 一次调用要么**全是位置**、要么**全是标签**，混用是 parse error
+- `..base` 只在参数表第一位，且**只求值一次**（`base` 是任意表达式，可嵌套 `R(..R(..r, num: 1), den: 2)`）；`base` 必须同类型（否则 E0001）
+- 不带 `..base` 时每个字段都要给：漏 → `[E0007] 'R' is missing field 'den'`
+- 写错标签 `[E0007] 'R' has no field 'z'`；重复 `[E0007] duplicate field 'num' in R(...)`
+- 零参变体没有字段：`Red(..r)` → `[E0007] 'Red' has no fields to update`
+- 标签**不进模式**：`R(num: 3, den: 4)` 的值就是 `R(3, 4)`，解构按位置写
+
+### 5.3 模式匹配 `match`
 
 ```ta
 match scrutinee {
@@ -250,7 +308,7 @@ match scrutinee {
 - guard 可引用 pattern 绑定的变量，支持 `&&` / `||`
 - 臂之间**换行分隔**，同行多臂可用 `;`（`match r { Ok(v) -> v; Err(_) -> d }`）；
   臂体是 `{ … }` 块或表达式
-- 无臂命中时 match **静默求值为 nil**——穷尽性检查（§5.2.2）会拦掉
+- 无臂命中时 match **静默求值为 nil**——穷尽性检查（§5.3.2）会拦掉
   ADT/列表的大多数漏臂，但 scrutinee 类型无法推断为具体 ADT/列表时
   （如符号消息的 `recv()`，§8.2）拦不住
 
@@ -278,7 +336,7 @@ match scrutinee {
 - 列表两种形态：`nil` / `[]`（**同一个值**，`match nil` 与 `match []`
   等价）与 `cons(h, t)` / `[h | t]`（尾必须是活变量/通配）
 
-#### 5.2.2 穷尽性检查
+#### 5.3.2 穷尽性检查
 
 编译器对 **ADT match** 与 **列表 match**（scrutinee 可推断为 `List(E)`）做
 穷尽性检查：缺变体且无兜底臂（变量 / `_` / 活尾）时编译拒绝：
@@ -299,64 +357,6 @@ match scrutinee {
   **此时照常检查**（`match recv() { Add(1) -> … }` 漏 `Sub` 照样 E0005）；
   但符号消息（`'ping -> …`）不约束 `'a`，类型保持自由，检查无从触发——
   漏臂静默 nil，随后在别处爆掉。写 actor 循环时兜底臂不能省
-
-### 5.3 ADT 声明
-
-```ta
-type Color { Red; Green; Blue }
-type Option { None; Some(value) }
-type Rat { R(num : Int, den : Int) }      // 标签字段（可选）
-```
-
-- 变体之间用 `;` 分隔，可换行，末项 `;` 可省
-- 零参变体的值就是符号（`Red` → `'Red`）；带参变体的值是**定长扁平 tuple**
-  （`Some(42)` 第 0 槽是符号 `'Some`，其余是字段）
-- **字段可以带标签**（`R(num : Int, …)`）：调用处可按名传参、顺序任意、
-  可用 `..base` 更新（§5.3.1）。不带标签的字段只能按位置传
-- **泛型：显式声明类型参数表**。参数**按名**代入字段类型——
-  参数 `a` 替换所有字段类型里出现的裸名 `a`：
-
-```ta
-type Option(t) { None; Some(value) }
-type L(a, b) { L(x : a, y : b) }        // 字段标签可选
-
-// L(1, "s") → L(Int, String)
-// type M(a, b) { M(x : b, y : a) } 里 M("s", 1) → M(Int, String)
-// （字段 x 的类型是 b=Int，字段 y 的类型是 a=String）
-```
-
-- **未注解的字段按位置绑参数**：`Option(t) { Some(value) }` 里 `value`
-  的类型就是 `t`（`Option(Int)` 的 `Some(5)` 载荷是 Int）——
-  这就是标准库 `Option`/`Result`/`list` 的写法
-
-  隐式小写字段（无参数表）的字段类型**不在变体之间统一**——
-  `type M { Ping(from); Pong(to) }` 里 `from`/`to` 各自独立推导，
-  使用点推成什么就是什么（Pid、Int 都行）；想要共享类型用显式参数表
-
-- 隐式小写字段（`type R { Ok(v); Err(e) }`，**没有**参数表）也能推导，
-  但**该 ADT 不能在注解处应用类型**（`R(Int, String)` 会报 cannot unify）——
-  要注解就用显式参数表，要省事就全程裸名（§6.6）
-- **递归 ADT** 合法：`type Tree { Leaf; Node(l, v, r) }`
-- 跨模块引用：类型名、构造子名都是模块成员，必须带前缀（§9.2）
-
-#### 5.3.1 按标签构造与更新
-
-```ta
-type Rat { R(num : Int, den : Int) }
-
-R(3, 4)             // 位置
-R(num: 3, den: 4)   // 按名
-R(den: 4, num: 3)   // 名字寻址，顺序任意
-let half = R(1, 2)
-R(..half, num: 5)   // 更新：拷贝 half 全部字段，替换点名的 → R(5, 2)
-```
-
-- 一次调用要么**全是位置**、要么**全是标签**，混用是 parse error
-- `..base` 只在参数表第一位，且**只求值一次**（`base` 是任意表达式，可嵌套 `R(..R(..r, num: 1), den: 2)`）；`base` 必须同类型（否则 E0001）
-- 不带 `..base` 时每个字段都要给：漏 → `[E0007] 'R' is missing field 'den'`
-- 写错标签 `[E0007] 'R' has no field 'z'`；重复 `[E0007] duplicate field 'num' in R(...)`
-- 零参变体没有字段：`Red(..r)` → `[E0007] 'Red' has no fields to update`
-- 标签**不进模式**：`R(num: 3, den: 4)` 的值就是 `R(3, 4)`，解构按位置写
 
 ### 5.4 use 绑定（do-notation）
 
@@ -666,7 +666,7 @@ Int 和 Float 是完全不同的类型，任何运算符都不做隐式转换：
 |------|------|------|
 | `spawn(f)` | `Pid` 返回 | 新进程运行 `f`，返回 Pid。`f` 必须是**零参闭包**——直接传顶层函数名（`worker`，§8.1）或闭包（`fn { server(cfg) }`，可捕获初值）。传其它任何值（含符号 `'worker`、函数**调用结果** `worker("a")`——TA 没有部分应用）运行期死 `spawn on non-closure`。**注解里写不出「零参函数」**：`fn -> Pid`、`fn() -> Pid` 都是语法错误（§6.2），也没有 `forall` 语法——内部类型 `forall(a, a -> Pid)` 对任何值通过检查，所以高阶参数注解只写具体箭头形（如 `Int -> Pid`）或不写 |
 | `send(pid, msg)` | `Pid -> 'a -> 'b` | 异步投递任何值 |
-| `recv()` | `'a` | 阻塞，FIFO 取下一条（§8.2：穷尽性检查规则见 §5.2.2） |
+| `recv()` | `'a` | 阻塞，FIFO 取下一条（§8.2：穷尽性检查规则见 §5.3.2） |
 | `recv_after(ms)` | `Int -> 'a` | 至多等 ms 毫秒，超时返回 nil，邮箱不动 |
 | `receive { … }` | 见 §8.2 | 选择性接收 |
 | `self()` | `Pid` | 自身 Pid |
@@ -691,7 +691,7 @@ fn main() {
 
 ```ta
 fn handler() {
-  // recv：严格 FIFO。符号消息不约束类型 → 漏臂无检查、静默 nil（§5.2.2）
+  // recv：严格 FIFO。符号消息不约束类型 → 漏臂无检查、静默 nil（§5.3.2）
   match recv() {
     'ping -> print("ping")
     'pong -> print("pong")
