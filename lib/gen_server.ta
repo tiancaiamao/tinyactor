@@ -54,6 +54,7 @@
 // Avoidance: give the shared helper an explicit `-> 'a`, or let each
 // caller inline its own receive (registry does the latter).
 
+import "tinyactor:lib/down"
 type Msg {
   Call(req, from)
   Cast(msg)
@@ -101,7 +102,7 @@ pub fn call(server : Pid, req) -> 'a {
   send(server, Call(req, self()))
   receive {
     Reply(reply) -> reply
-    cons('DOWN, cons(dref, cons(_, cons(_, nil)))) when dref == ref -> call_died()
+    down.Down(dref, _, _) when dref == ref -> call_died()
   }
 }
 

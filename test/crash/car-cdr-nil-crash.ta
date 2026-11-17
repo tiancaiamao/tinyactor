@@ -6,6 +6,7 @@
 // Expected stdout: main alive
 // Expected stderr: ** CRASH pid N: 'cartype ... / 'cdrtype ...
 
+import "tinyactor:lib/down"
 fn head(x) {
   car(cdr(x))
 }
@@ -19,7 +20,7 @@ fn collect(n) {
     print("main alive")
   } else {
     match recv() {
-      [DOWN, ref, pid, reason] -> collect(n - 1)
+      down.Down(ref, pid, reason) -> collect(n - 1)
       _ -> collect(n)
     }
   }

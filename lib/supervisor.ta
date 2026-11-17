@@ -35,6 +35,7 @@
 // start: spawn the supervisor over a list of child start thunks. The
 // returned pid is the supervisor handle: monitor it to detect give-up
 // (intensity exceeded) or a crash of the supervision loop itself.
+import "tinyactor:lib/down"
 import "tinyactor:lib/option"
 
 // Entry: one supervised child — its start thunk, the pid it spawned, the
@@ -90,7 +91,7 @@ fn start_child(start_fn, restarts : Int) {
 // run: the supervision loop — handle one DOWN at a time.
 fn run(max_restarts : Int, entries) -> Symbol {
   receive {
-    ['DOWN, ref, dead_pid, reason] -> {
+    down.Down(ref, dead_pid, reason) -> {
       handle_down(max_restarts, entries, ref)
     }
   }

@@ -267,7 +267,7 @@ match scrutinee {
 | `Name(a, b)` | 构造子：标签相等 + 逐参解构 | `Ok(v) ->` |
 | `mod.Name(a)` | 跨模块构造子 | `option.Some(v) ->` |
 | `cons(a, b)` | 列表 head/tail 解构 | `cons(h, t) ->` |
-| `[a, b, c]` | 定长列表（长度恰好 3） | `['DOWN, r, p, reason] ->` |
+| `[a, b, c]` | 定长列表（长度恰好 3） | `[a, b, c] ->` |
 | `[a, b \| rest]` | 前 2 定长 + 活尾（长度 ≥ 2） | `[h \| t] ->` |
 
 - **大写**构造子模式按标签严格相等；`mod.Name` 看**最后一段**
@@ -621,7 +621,7 @@ fn unwrap_or(d, r) {                            // 全程裸名推导，同样�
    at main (fn 4)
 ```
 
-- monitor 方收到 `['DOWN, ref, pid, 'divzero]`
+- monitor 方收到 `down.Down(ref, pid, down.Other("divzero"))`（先 `import "tinyactor:lib/down"`）
 - main 进程死亡 → 程序 exit 1；子进程死亡 → 其余进程继续，exit 不受影响
 - 浮点除零不死亡（`1.0 / 0.0` → inf）
 
@@ -670,7 +670,7 @@ Int 和 Float 是完全不同的类型，任何运算符都不做隐式转换：
 | `recv_after(ms)` | `Int -> 'a` | 至多等 ms 毫秒，超时返回 nil，邮箱不动 |
 | `receive { … }` | 见 §8.2 | 选择性接收 |
 | `self()` | `Pid` | 自身 Pid |
-| `monitor(pid)` | `Pid -> Int` | 返回 Int ref；pid 死亡时收 `['DOWN, ref, pid, reason]` |
+| `monitor(pid)` | `Pid -> Int` | 返回 Int ref；pid 死亡时收 `down.Down(ref, pid, reason)`（`lib/down.ta`） |
 
 ```ta
 fn worker() { print("worker running") }
@@ -713,7 +713,8 @@ fn handler() {
 ### 8.3 进程生命周期与 monitor
 
 - 进程死亡原因：运行期错误（`'divzero`、`cartype`…）或正常返回
-- **正常返回也发 DOWN**：`reason` 为 `nil`；崩溃时 reason 是错误符号
+- **正常返回也发 DOWN**：`reason` 为 `down.Normal`；监控已死亡进程时是 `down.Noproc`；
+  崩溃时是 `down.Other("divzero")` 等——运行期错误符号跨消息边界转成 String
 - 崩溃时 stderr 打印 `** CRASH pid N: 'reason` 及函数位置
 - main 死亡 → 程序结束（exit 1）；非 main 死亡 → 其余进程继续运行
 
@@ -732,7 +733,7 @@ fn main() {
   let ref = monitor(pid)
   send(pid, 'go)
   match recv() {
-    ['DOWN, r, p, reason] -> print("worker died")
+    down.Down(r, p, reason) -> print("worker died")
   }
 }
 ```
@@ -1076,7 +1077,7 @@ match recv() {
 - [ ] 用户函数实参个数必须与声明一致（E0003）
 - [ ] 跨模块引用必须带模块前缀（函数、类型、构造子、const）
 - [ ] spawn 调用 0 参函数；传初值用闭包捕获
-- [ ] monitor 对正常结束也发 DOWN（reason nil）
+- [ ] monitor 对正常结束也发 DOWN（reason `down.Normal`）
 - [ ] Resource 不得 send 给自己 / 进定时消息 / 走 selective receive
 
 ---
@@ -1109,7 +1110,7 @@ fn supervisor(main_pid) {
 
 fn sup_loop(main_pid, pid, ref, count) {
   match recv() {
-    ['DOWN, r, p, reason] -> {
+    down.Down(r, p, reason) -> {
       print("worker died")
       if count < 2 {
         let new_pid = spawn(fn { worker(count + 1) })

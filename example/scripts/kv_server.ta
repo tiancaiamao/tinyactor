@@ -23,6 +23,7 @@
 // Rate limiting: global token bucket (capacity 10, refill 5/s) in the
 // accept loop; over the limit → 429.
 
+import "tinyactor:lib/down"
 import "tinyactor:lib/net"
 import "tinyactor:lib/http"
 import "tinyactor:lib/vm"
@@ -184,7 +185,7 @@ fn sup_loop(kv, kv_ref) {
       send(from, kv)
       sup_loop(kv, kv_ref)
     }
-    ['DOWN, ref, dead_pid, reason] when ref == kv_ref -> {
+    down.Down(ref, dead_pid, reason) when ref == kv_ref -> {
       print("  [sup] kv actor crashed — restarting with empty store")
       let kv2 = spawn(fn { kv_loop(nil) })
       let ref2 = monitor(kv2)

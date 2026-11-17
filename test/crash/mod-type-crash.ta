@@ -6,6 +6,7 @@
 // Expected stdout: main alive
 // Expected stderr: ** CRASH pid N: 'arithtype ... at crasher ...
 
+import "tinyactor:lib/down"
 fn crasher() {
   let v = recv()
   let r = v % 2
@@ -17,7 +18,7 @@ fn main() {
   let ref = monitor(crasher_pid)
   send(crasher_pid, "str")
   match recv() {
-    [DOWN, ref2, pid, reason] -> print("main alive")
+    down.Down(ref2, pid, reason) -> print("main alive")
     _ -> print("unexpected")
   }
 }

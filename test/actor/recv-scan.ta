@@ -15,6 +15,7 @@
 //   PASS
 //   server-done
 
+import "tinyactor:lib/down"
 fn server() {
   receive {
     'second -> print("got-second")
@@ -35,6 +36,6 @@ fn main() {
   send(srv, 42)
   let ref = monitor(srv)
   receive {
-    ['DOWN, r, pid, reason] -> print("server-done")
+    down.Down(r, pid, reason) -> print("server-done")
   }
 }

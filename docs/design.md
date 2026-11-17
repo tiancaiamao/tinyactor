@@ -52,7 +52,9 @@ let y = x + 1
 // 条件
 if x > 0 { print("positive") } else { print("non-positive") }
 
-// 模式匹配
+// 模式匹配（DOWN 是 lib/down.ta 声明的 ADT）
+import "tinyactor:lib/down"
+
 match x {
   Red -> 1
   Green -> 2
@@ -61,7 +63,7 @@ match x {
 
 // 模式匹配 + 解构
 match msg {
-  ['DOWN, ref, pid, reason] -> print("process died")
+  down.Down(ref, pid, reason) -> print("process died")
   Ping(from) -> send(from, Pong)
   _ -> print("unknown")
 }
@@ -125,7 +127,7 @@ fn worker(id) {
 
 fn sup_loop(pid, ref, count) {
   match recv() {
-    ['DOWN, r, p, reason] -> {
+    down.Down(r, p, reason) -> {
       print("worker died")
       if count < 2 {
         let new_pid = spawn(fn { worker(count + 1) })

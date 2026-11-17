@@ -38,7 +38,7 @@ source
 | `f: fn(Int) -> Int` 等注解 | 额外 `(type-sig name (param_types...) ret_type)` 表单；codegen 跳过 | parser |
 | `[a, b, c]` | `(list a b c)` 特殊形式 → codegen 展开回 `cons` 链 | parser → codegen |
 | `match` 表达式 | lower 的 `match_desugar` → 嵌套 `if` + `=` 比较（`.kl` 词表里没有 match） | lower |
-| 列表模式 `['DOWN, r, p, reason]` | 链式 `cons` 解构 | lower |
+| 列表模式 `[a, b, c]` | 链式 `cons` 解构（DOWN 已改用 ADT 构造子模式，见 `lib/down.ta`） | lower |
 | 构造子调用 `Point(1, 2)` | `(tuple (quote Point) 1 2)` | parser |
 | 构造子模式 `Point(x, y)` | `(tuple (quote Point) x y)` | parser |
 | `R(num: 3, den: 4)` / `R(..h, num: 5)` | `('ctor.labels (quote R) nil ((num 3) (den 4)))` / `('ctor.labels (quote R) h ((num 5)))` | parser |

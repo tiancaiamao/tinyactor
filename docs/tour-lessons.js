@@ -211,15 +211,15 @@ const LESSONS = [
     "section": "Actors",
     "title": "选择性接收",
     "text": "receive { pattern -> body } 会扫描邮箱，跳过不匹配的消息，直到找到匹配的。这突破了严格 FIFO 的限制：即使 'first 先到，也可以先接收 'second。被跳过的消息留在邮箱里，之后还能收到。",
-    "code": "fn server() {\n  receive {\n    'second -> print(\"got-second\")\n  }\n  receive {\n    'first -> print(\"then-first\")\n  }\n  receive {\n    n -> if n == 42 { print(\"PASS\") } else { print(\"FAIL\") }\n  }\n}\n\nfn main() {\n  let srv = spawn(fn { server() })\n  send(srv, 'first)\n  send(srv, 'second)\n  send(srv, 42)\n  let ref = monitor(srv)\n  receive {\n    ['DOWN, r, pid, reason] -> print(\"server-done\")\n  }\n}",
+    "code": "import \"tinyactor:lib/down\"\n\nfn server() {\n  receive {\n    'second -> print(\"got-second\")\n  }\n  receive {\n    'first -> print(\"then-first\")\n  }\n  receive {\n    n -> if n == 42 { print(\"PASS\") } else { print(\"FAIL\") }\n  }\n}\n\nfn main() {\n  let srv = spawn(fn { server() })\n  send(srv, 'first)\n  send(srv, 'second)\n  send(srv, 42)\n  let ref = monitor(srv)\n  receive {\n    down.Down(r, pid, reason) -> print(\"server-done\")\n  }\n}",
     "expected": "got-second\nthen-first\nPASS\nserver-done"
   },
   {
     "id": "monitor-down",
     "section": "Actors",
     "title": "monitor / DOWN",
-    "text": "monitor(pid) 监控另一个进程并返回一个 ref。被监控进程死亡时，监控方会收到 ['DOWN, ref, pid, reason] 消息。这是构建 supervisor 的基础。这里 worker 除零崩溃，main 收到 DOWN 通知；VM 还会额外打一行 ** CRASH 报告（带 pid 与帧号），那不是 print 的输出。",
-    "code": "fn worker() {\n  1 / 0\n}\n\nfn main() {\n  let pid = spawn(worker)\n  let ref = monitor(pid)\n  match recv() {\n    ['DOWN, r, p, reason] -> print(\"DOWN received\")\n  }\n}",
+    "text": "monitor(pid) 监控另一个进程并返回一个 ref。被监控进程死亡时，监控方会收到 down.Down(ref, pid, reason) 消息（定义在 lib/down.ta，需 import）。这是构建 supervisor 的基础。这里 worker 除零崩溃，main 收到 DOWN 通知；VM 还会额外打一行 ** CRASH 报告（带 pid 与帧号），那不是 print 的输出。",
+    "code": "import \"tinyactor:lib/down\"\n\nfn worker() {\n  1 / 0\n}\n\nfn main() {\n  let pid = spawn(worker)\n  let ref = monitor(pid)\n  match recv() {\n    down.Down(r, p, reason) -> print(\"DOWN received\")\n  }\n}",
     "expected": "DOWN received"
   },
   {

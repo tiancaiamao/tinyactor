@@ -202,7 +202,7 @@ spawn/send/recv/self + 消息深拷贝，`actor-recv-loop` = 同一 recv 站点�
 挂起/重入 100 次，`actor-cfunc-block` = `time.sleep` 的 cfunc 站点与 recv 站点
 在同一次运行里交替挂起，`actor-peek-commit` = `recv_peek`/`recv_commit` 的
 游标语义，`actor-select-recv` = `receive` 脱糖产物的完整阻塞路径，
-`actor-monitor` = `monitor` 拿 ref 后 `(DOWN ref pid reason)` 四字段全对，
+`actor-monitor` = `monitor` 拿 ref 后 `(down.Down ref pid reason)` 四字段全对，
 `actor-recv-after` = 空邮箱超时返回 nil 且不消费 + 消息赢过 deadline）、
 C 函数作值（`cfunc-value`：同一个 `str.to_int` 值同时走尾位置、非尾位置、
 作实参传进高阶函数、存进堆上的 pair 再取出四种路径）。

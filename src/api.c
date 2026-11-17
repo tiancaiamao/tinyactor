@@ -237,14 +237,12 @@ VM *vm_new(void) {
     vm->symbols = malloc(vm->sym_cap * sizeof(char *));
     vm->sym_count = 0;
 
-    static const char *const keywords[] = {"quote",   "define", "lambda", "if",    "begin", "let",
-                                           "letrec",  "match",  "spawn",  "send",  "recv",  "self",
-                                           "monitor", "cons",   "car",    "cdr",   "+",     "-",
-                                           "*",       "/",      "%",      "=",     "!=",    "<",
-                                           "<=",      ">",      ">=",     "null?", "cons?", "int?",
-                                           "string?", "bytes?", "pid?",   "print", "true",  "false",
-                                           "DOWN",    "nil",    "_",      "and",   "or",    "not",
-                                           "set!",    NULL};
+    static const char *const keywords[] = {
+        "quote",     "define", "lambda", "if",      "begin",  "let",  "letrec", "match", "spawn",
+        "send",      "recv",   "self",   "monitor", "cons",   "car",  "cdr",    "+",     "-",
+        "*",         "/",      "%",      "=",       "!=",     "<",    "<=",     ">",     ">=",
+        "null?",     "cons?",  "int?",   "string?", "bytes?", "pid?", "print",  "true",  "false",
+        "down.Down", "nil",    "_",      "and",     "or",     "not",  "set!",   NULL};
     for (int i = 0; keywords[i]; i++)
         vm_intern_symbol(vm, keywords[i]);
 

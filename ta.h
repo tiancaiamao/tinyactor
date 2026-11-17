@@ -992,6 +992,11 @@ Val val_tuple_new(Proc *p, int n);
 Val val_string(Proc *p, const char *data, int len);
 Val val_bytes(Proc *p, const uint8_t *data, int len);
 
+/* VM DOWN message (lib/down.ta): reserve down_msg_heap_bytes first, close the
+ * GC gate, then down_msg_build — the reason may need a String allocation. */
+int down_msg_heap_bytes(VM *vm, Val reason);
+Val down_msg_build(VM *vm, Proc *p, Val ref, Val pid, Val reason);
+
 /* ============================================================
  * C API — 资源值（src/resource.c，docs/c-resource-design.md）
  * ============================================================ */

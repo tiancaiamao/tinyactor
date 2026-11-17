@@ -25,6 +25,7 @@
 //
 // Every check prints "ok - <label>"; PASS only when all pass.
 // expect: PASS
+import "tinyactor:lib/down"
 import "tinyactor:lib/buffer"
 import "tinyactor:lib/result"
 import "tinyactor:lib/str"
@@ -44,9 +45,9 @@ fn ok(label, pass) {
 // arrive before the crash), return 1 when a DOWN reports 'resource.
 fn await_death() {
   match recv() {
-    ['DOWN, _, _, reason] -> {
+    down.Down(_, _, reason) -> {
       match reason {
-        'resource -> 1
+        down.Other("resource") -> 1
         _ -> {
           print("FAIL - offender died with a non-'resource reason")
           0
