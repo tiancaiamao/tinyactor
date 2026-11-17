@@ -21,10 +21,16 @@
 import "tinyactor:lib/option"
 import "tinyactor:lib/result"
 
-external fn os.raw_getenv(name) -> a
-external fn os.raw_args() -> a
-external fn os.raw_hostname() -> a
-external fn os.raw_exit(code) -> a
+// C signatures (lib/os.c header): getenv String|nil (nil lifted to Option
+// below), args List(String), hostname String|-1 (lifted to Result), exit
+// never returns. Params/results typed by their success shape; literal nil
+// and -1 patterns carry no static constraint in this checker.
+external fn os.raw_getenv(name : String) -> String
+external fn os.raw_args() -> List(String)
+external fn os.raw_hostname() -> String
+// exit never returns: keep `-> a` (forall a. a = bottom-like) so it
+// typechecks in any position; TA has no bottom type.
+external fn os.raw_exit(code : Int) -> a
 
 // getenv: nil (absence) -> None, string -> Some.
 pub fn getenv(name) {

@@ -93,10 +93,9 @@ import "tinyactor:lib/timer"
 import "tinyactor:lib/option"
 import "tinyactor:lib/result"
 
-// Raw tls read primitive: injected straight into the bufio reader for
-// https (same shape as net.read's signal set). Declared here so the
-// injection lambda stays a single monomorphic call.
-external fn tls.raw_read(h, n) -> a
+// Injected into the bufio reader for https; mirror lib/tls.ta's precise n
+// param (Int), open return (signal union); h stays bare (forged-handle test).
+external fn tls.raw_read(h, n : Int) -> a
 
 // Redirect budget: at most this many hops are followed before
 // Err(TooManyRedirects). A self-loop therefore errors after 5 follows.

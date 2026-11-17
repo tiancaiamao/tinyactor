@@ -27,11 +27,15 @@ import "tinyactor:lib/option"
 
 // Raw sha256 C ABI (dotted primitives registered by the lazy dylib at
 // load, docs/c-module.md §4).
+// C ABI (lib/sha256.c): state is an opaque copyable SHA256_CTX value
+// (bytes? dispatch below), data String, off/len Int. Returns: states are
+// opaque bytes, final/digest are String|-1 (string? dispatch) — no TA
+// arrow can state these unions, so returns stay a; params are precise.
 external fn sha256.raw_new() -> a
-external fn sha256.raw_update(state, data) -> a
-external fn sha256.raw_update_at(state, data, off, len) -> a
+external fn sha256.raw_update(state, data : String) -> a
+external fn sha256.raw_update_at(state, data : String, off : Int, len : Int) -> a
 external fn sha256.raw_final(state) -> a
-external fn sha256.raw_digest(data) -> a
+external fn sha256.raw_digest(data : String) -> a
 
 // A hasher is a digest state.
 pub type Hasher {
