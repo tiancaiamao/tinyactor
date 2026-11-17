@@ -351,13 +351,15 @@ ping-pong，按需 `realloc` 增长；`proc_die` / `vm_free` 已有的 `free(p->
   `str_parse_float` 返回 2 槽元组。
 - `test/compiler/parser-ast.ta` 期望、`test/kernfuzz-frozen/` 快照随之重生成。
 
-**没有跟着改的**：C 侧 DOWN 消息（`src/builtin.c` / `src/scheduler.c` 的
-`['DOWN, pid, reason]`）仍是 cons 链——它是消息协议，不是 ADT 值。`cons` 的 cdr
-语义收紧当时留作独立一步（ADT 全部落地到 tuple 之后 cons 才只剩一种用法）。
-
 → 已落地（E 系列）：`cons : a -> List(a) -> List(a)`，同时退掉内置 `Pair`、
 `pair?` 改名 `cons?`——收紧后 `pair?` 只剩「是不是 cons cell」一个语义，
 旧名字是点对时代的遗留。异构记录一律用声明 record / ADT。
+
+C 侧 DOWN 消息原先也是唯一没跟着改的例外（`['DOWN, ref, pid, reason]` cons 链）。
+现在已迁到 `lib/down.ta` 的 `down.Down(ref, pid, reason)` ADT：`src/scheduler.c`
+与 `src/builtin.c` 用 `val_tuple_new` 直接构造，reason 为 `down.Normal` /
+`down.Noproc` / `down.Other(String)`。运行期错误原因在 VM 里是内部符号，
+跨消息边界转成 String——Symbol 是语言机制，不是通用数据。
 
 ## D16. records = 带标签的单变体 ADT（TASIG4）
 

@@ -867,7 +867,7 @@ fn bind_subject(scrut : ast.Expr, clauses : List(Clause)) -> ast.Expr {
   ast.ELet(gensym(), scrut, match_chain(clauses, ast.ESym(gensym())))
 }
 
-// 模式里是否出现符号 name —— **保守超集**：字面量符号（'DOWN）、构造子名也算
+// 模式里是否出现符号 name —— **保守超集**：字面量符号（'tag）、构造子名也算
 // 出现。误判只让 match_desugar 多绑一层 _m（少省一次优化），不会生成错代码，
 // 所以这里不必与绑定侧（bind_arm）对「什么算变量」的定义逐条对齐。
 fn clauses_mention(clauses : List(Clause), name : Symbol) -> Bool {
@@ -963,9 +963,9 @@ fn match_chain(cls : List(Clause), t : ast.Expr) -> ast.Expr {
 // receive 臂的模式**不经过** TA parse_pattern 的 cons 链编码——AST 里臂模式
 // 就是原始列表字面量，lower-ast 原样透传，到达这里时是 (quote (e0 e1 ...))。
 // 只认 (quote SYM) 的话，quoted 列表会落进脊展开：'quote 头被当变量（恒真），
-// 元素被当字面量在**错误的深度**上 eq?——['DOWN, r, pid, reason] 编译出
-// cons?(car t) 开头的判定链，对 (DOWN ref pid reason) 永远判否，receive 永远
-// 等不到消息（recv-guard / gen-server-crash 双双超时的根源）。
+// 元素被当字面量在**错误的深度**上 eq?——['tag, a, b] 编译出
+// cons?(car t) 开头的判定链，对预期列表永远判否，receive 永远
+// 等不到消息（历史回归）。
 // 语义对齐 tavm 的 cons 链：元素逐位判定/绑定，末段 nil 把长度钉死。
 fn match_test(pat : form.Form, t : ast.Expr) -> ast.Expr {
   // 不变量：本函数（及 spine_test / pair_guard / fields_test）返回的表达式
@@ -1033,7 +1033,7 @@ fn quoted_payload_test(q : form.Form, t : ast.Expr) -> ast.Expr {
         nil -> call2('eq?, t, ast.EConst(ast.CNil))
         cons(h, _) -> {
           // (quote (quote X))：bracket 列表模式的引号元素多包的一层 quote
-          // （['DOWN, ...] 摊平后首元素是 (quote (quote DOWN))）——X 是字面量，
+          // （['tag, ...] 摊平后首元素是 (quote (quote tag))）——X 是字面量，
           // eq? 了事，绝不能把 (quote X) 再当双元素列表下钻
           if form.is_sym(h, 'quote) { call2('eq?, t, lit(unquote(q))) }
           // (quote (a b ...))：cons?(t) → a 对 car → 余段对 cdr

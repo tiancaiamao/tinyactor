@@ -185,20 +185,15 @@ static BStatus b_monitor(VM *vm, Proc *p) {
     if (!alive) {
         /* Target already dead or nonexistent: deliver DOWN immediately. Only
          * THIS ref is at stake: we did not insert it, so proc_die's iteration
-         * cannot produce a duplicate. The nested val_pair chain keeps each
-         * intermediate pair only in a C local across the next allocation, so
-         * no collection may run inside it: reserve its room first, then close
-         * the gate. The reservation sizes itself from p->sp, so p->sp must be
-         * current before it (the pop above left it so). */
-        proc_reserve_heap(p, 4 * ta_heap_object_size(sizeof(HeapPair)));
+         * cannot produce a duplicate. The Down value's tuple/string nodes
+         * live only in C locals across allocations, so no collection may run
+         * inside it: reserve its room first, then close the gate. The
+         * reservation sizes itself from p->sp, so p->sp must be current
+         * before it (the pop above left it so). */
+        Val noproc = val_symbol((uint32_t)vm_intern_symbol(vm, "noproc"));
+        proc_reserve_heap(p, down_msg_heap_bytes(vm, noproc));
         proc_gc_enter(p);
-        int down_sym = vm_intern_symbol(vm, "DOWN");
-        int noproc_sym = vm_intern_symbol(vm, "noproc");
-        Val msg =
-            val_pair(p, val_symbol((uint32_t)down_sym),
-                     val_pair(p, val_int(ref),
-                              val_pair(p, val_pid(tpid),
-                                       val_pair(p, val_symbol((uint32_t)noproc_sym), val_nil()))));
+        Val msg = down_msg_build(vm, p, val_int(ref), val_pid(tpid), noproc);
         mbox_deliver(vm, p, msg);
         /* msg was serialized out; nothing is at risk. The reopen can drain,
          * i.e. collect on this stack, so the top it scans has to be the real

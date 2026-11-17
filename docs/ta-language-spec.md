@@ -62,7 +62,7 @@ fn main() {
 ```ta
 import "tinyactor:lib/list" as list    // 模块引入（§11）
 pub fn f(x) { … }                      // 函数（pub = 跨模块导出）
-type Ctor { … }                        // ADT 声明（§5.3）
+type Ctor { … }                        // ADT 声明（§5.2）
 const LIMIT = 10                       // 常量（一律导出）
 ```
 
@@ -208,7 +208,7 @@ fn main() {
   nil 安全、越界返回 nil。不要写 `car(cdr(cdr(x)))`。
 - 遍历先判 `null?`/`cons?`（模式匹配写法见 §5）。
 - 列表的构造子形态是 `nil` 与 `cons`，所以 `match [h | t] -> …` 与
-  `match cons(h, t) -> …` 等价（§5.2）。
+  `match cons(h, t) -> …` 等价（§5.3）。
 
 ---
 
@@ -236,71 +236,7 @@ fn main() {
 }
 ```
 
-### 5.2 模式匹配 `match`
-
-```ta
-match scrutinee {
-  pattern -> expr
-  pattern when guard -> expr    // guard 为 false 时跳过该臂
-  _ -> default
-}
-```
-
-- 按臂顺序尝试，**首个**命中且 guard 为真的臂生效
-- guard 可引用 pattern 绑定的变量，支持 `&&` / `||`
-- 臂之间**换行分隔**，同行多臂可用 `;`（`match r { Ok(v) -> v; Err(_) -> d }`）；
-  臂体是 `{ … }` 块或表达式
-- 无臂命中时 match **静默求值为 nil**——穷尽性检查（§5.2.2）会拦掉
-  ADT/列表的大多数漏臂，但 scrutinee 类型无法推断为具体 ADT/列表时
-  （如符号消息的 `recv()`，§8.2）拦不住
-
-#### 模式语法
-
-| 模式 | 匹配 | 示例 |
-|------|------|------|
-| 整数字面量 | 精确 | `42 ->` |
-| 符号字面量 | 精确 | `'hello ->` |
-| `nil` / `true` / `false` | 精确 | `nil ->` |
-| 小写裸名 | **变量绑定**，匹配任何值 | `n ->` |
-| `_` | 通配 | `_ ->` |
-| `Name`（大写、零参） | 零参构造子 | `Red ->` |
-| `Name(a, b)` | 构造子：标签相等 + 逐参解构 | `Ok(v) ->` |
-| `mod.Name(a)` | 跨模块构造子 | `option.Some(v) ->` |
-| `cons(a, b)` | 列表 head/tail 解构 | `cons(h, t) ->` |
-| `[a, b, c]` | 定长列表（长度恰好 3） | `['DOWN, r, p, reason] ->` |
-| `[a, b \| rest]` | 前 2 定长 + 活尾（长度 ≥ 2） | `[h \| t] ->` |
-
-- **大写**构造子模式按标签严格相等；`mod.Name` 看**最后一段**
-  （大写 = 构造子，小写 = 变量/调用，`bufio.read(v)` 不构成模式）
-- 定长方括号臂**不吸收多余元素**：3 元素列表遇 `[a, b]` 不匹配——
-  遍历用 `[h | t]` 或 `cons(h, t)`
-- 其余 token（裸算符、`{`、`,`）不构成模式，是 parse error——不会静默降成 `_`
-- 列表两种形态：`nil` / `[]`（**同一个值**，`match nil` 与 `match []`
-  等价）与 `cons(h, t)` / `[h | t]`（尾必须是活变量/通配）
-
-#### 5.2.2 穷尽性检查
-
-编译器对 **ADT match** 与 **列表 match**（scrutinee 可推断为 `List(E)`）做
-穷尽性检查：缺变体且无兜底臂（变量 / `_` / 活尾）时编译拒绝：
-
-```
-[E0005] non-exhaustive match: missing Blue
-```
-
-- 有意部分匹配要显式写 `_ ->` 臂
-- 嵌套构造子只算**部分覆盖**：
-  `[E0005] cannot prove exhaustive match: nested patterns cover only part of Some — add an explicit _ -> arm`。
-  检查是**充分条件**——真正穷尽但需交叉推理的 match 也会被拒；
-  把里层绑成变量逐层 match 是可静态验证的写法
-- **未知构造子**是编译错误，不是静默死臂：
-  `[E0005] unknown constructor 'Grn' in match on Color`
-- **穷尽性检查只在 scrutinee 类型可推断为具体 ADT/列表时触发**。
-  `recv()` 返回 `'a`：match 臂的构造子会把 `'a` unify 成那个 ADT，
-  **此时照常检查**（`match recv() { Add(1) -> … }` 漏 `Sub` 照样 E0005）；
-  但符号消息（`'ping -> …`）不约束 `'a`，类型保持自由，检查无从触发——
-  漏臂静默 nil，随后在别处爆掉。写 actor 循环时兜底臂不能省
-
-### 5.3 ADT 声明
+### 5.2 ADT 声明
 
 ```ta
 type Color { Red; Green; Blue }
@@ -312,7 +248,7 @@ type Rat { R(num : Int, den : Int) }      // 标签字段（可选）
 - 零参变体的值就是符号（`Red` → `'Red`）；带参变体的值是**定长扁平 tuple**
   （`Some(42)` 第 0 槽是符号 `'Some`，其余是字段）
 - **字段可以带标签**（`R(num : Int, …)`）：调用处可按名传参、顺序任意、
-  可用 `..base` 更新（§5.3.1）。不带标签的字段只能按位置传
+  可用 `..base` 更新（§5.2.1）。不带标签的字段只能按位置传
 - **泛型：显式声明类型参数表**。参数**按名**代入字段类型——
   参数 `a` 替换所有字段类型里出现的裸名 `a`：
 
@@ -339,7 +275,7 @@ type L(a, b) { L(x : a, y : b) }        // 字段标签可选
 - **递归 ADT** 合法：`type Tree { Leaf; Node(l, v, r) }`
 - 跨模块引用：类型名、构造子名都是模块成员，必须带前缀（§9.2）
 
-#### 5.3.1 按标签构造与更新
+#### 5.2.1 按标签构造与更新
 
 ```ta
 type Rat { R(num : Int, den : Int) }
@@ -357,6 +293,70 @@ R(..half, num: 5)   // 更新：拷贝 half 全部字段，替换点名的 → R
 - 写错标签 `[E0007] 'R' has no field 'z'`；重复 `[E0007] duplicate field 'num' in R(...)`
 - 零参变体没有字段：`Red(..r)` → `[E0007] 'Red' has no fields to update`
 - 标签**不进模式**：`R(num: 3, den: 4)` 的值就是 `R(3, 4)`，解构按位置写
+
+### 5.3 模式匹配 `match`
+
+```ta
+match scrutinee {
+  pattern -> expr
+  pattern when guard -> expr    // guard 为 false 时跳过该臂
+  _ -> default
+}
+```
+
+- 按臂顺序尝试，**首个**命中且 guard 为真的臂生效
+- guard 可引用 pattern 绑定的变量，支持 `&&` / `||`
+- 臂之间**换行分隔**，同行多臂可用 `;`（`match r { Ok(v) -> v; Err(_) -> d }`）；
+  臂体是 `{ … }` 块或表达式
+- 无臂命中时 match **静默求值为 nil**——穷尽性检查（§5.3.2）会拦掉
+  ADT/列表的大多数漏臂，但 scrutinee 类型无法推断为具体 ADT/列表时
+  （如符号消息的 `recv()`，§8.2）拦不住
+
+#### 模式语法
+
+| 模式 | 匹配 | 示例 |
+|------|------|------|
+| 整数字面量 | 精确 | `42 ->` |
+| 符号字面量 | 精确 | `'hello ->` |
+| `nil` / `true` / `false` | 精确 | `nil ->` |
+| 小写裸名 | **变量绑定**，匹配任何值 | `n ->` |
+| `_` | 通配 | `_ ->` |
+| `Name`（大写、零参） | 零参构造子 | `Red ->` |
+| `Name(a, b)` | 构造子：标签相等 + 逐参解构 | `Ok(v) ->` |
+| `mod.Name(a)` | 跨模块构造子 | `option.Some(v) ->` |
+| `cons(a, b)` | 列表 head/tail 解构 | `cons(h, t) ->` |
+| `[a, b, c]` | 定长列表（长度恰好 3） | `[a, b, c] ->` |
+| `[a, b \| rest]` | 前 2 定长 + 活尾（长度 ≥ 2） | `[h \| t] ->` |
+
+- **大写**构造子模式按标签严格相等；`mod.Name` 看**最后一段**
+  （大写 = 构造子，小写 = 变量/调用，`bufio.read(v)` 不构成模式）
+- 定长方括号臂**不吸收多余元素**：3 元素列表遇 `[a, b]` 不匹配——
+  遍历用 `[h | t]` 或 `cons(h, t)`
+- 其余 token（裸算符、`{`、`,`）不构成模式，是 parse error——不会静默降成 `_`
+- 列表两种形态：`nil` / `[]`（**同一个值**，`match nil` 与 `match []`
+  等价）与 `cons(h, t)` / `[h | t]`（尾必须是活变量/通配）
+
+#### 5.3.2 穷尽性检查
+
+编译器对 **ADT match** 与 **列表 match**（scrutinee 可推断为 `List(E)`）做
+穷尽性检查：缺变体且无兜底臂（变量 / `_` / 活尾）时编译拒绝：
+
+```
+[E0005] non-exhaustive match: missing Blue
+```
+
+- 有意部分匹配要显式写 `_ ->` 臂
+- 嵌套构造子只算**部分覆盖**：
+  `[E0005] cannot prove exhaustive match: nested patterns cover only part of Some — add an explicit _ -> arm`。
+  检查是**充分条件**——真正穷尽但需交叉推理的 match 也会被拒；
+  把里层绑成变量逐层 match 是可静态验证的写法
+- **未知构造子**是编译错误，不是静默死臂：
+  `[E0005] unknown constructor 'Grn' in match on Color`
+- **穷尽性检查只在 scrutinee 类型可推断为具体 ADT/列表时触发**。
+  `recv()` 返回 `'a`：match 臂的构造子会把 `'a` unify 成那个 ADT，
+  **此时照常检查**（`match recv() { Add(1) -> … }` 漏 `Sub` 照样 E0005）；
+  但符号消息（`'ping -> …`）不约束 `'a`，类型保持自由，检查无从触发——
+  漏臂静默 nil，随后在别处爆掉。写 actor 循环时兜底臂不能省
 
 ### 5.4 use 绑定（do-notation）
 
@@ -621,7 +621,7 @@ fn unwrap_or(d, r) {                            // 全程裸名推导，同样�
    at main (fn 4)
 ```
 
-- monitor 方收到 `['DOWN, ref, pid, 'divzero]`
+- monitor 方收到 `down.Down(ref, pid, down.Other("divzero"))`（先 `import "tinyactor:lib/down"`）
 - main 进程死亡 → 程序 exit 1；子进程死亡 → 其余进程继续，exit 不受影响
 - 浮点除零不死亡（`1.0 / 0.0` → inf）
 
@@ -666,11 +666,11 @@ Int 和 Float 是完全不同的类型，任何运算符都不做隐式转换：
 |------|------|------|
 | `spawn(f)` | `Pid` 返回 | 新进程运行 `f`，返回 Pid。`f` 必须是**零参闭包**——直接传顶层函数名（`worker`，§8.1）或闭包（`fn { server(cfg) }`，可捕获初值）。传其它任何值（含符号 `'worker`、函数**调用结果** `worker("a")`——TA 没有部分应用）运行期死 `spawn on non-closure`。**注解里写不出「零参函数」**：`fn -> Pid`、`fn() -> Pid` 都是语法错误（§6.2），也没有 `forall` 语法——内部类型 `forall(a, a -> Pid)` 对任何值通过检查，所以高阶参数注解只写具体箭头形（如 `Int -> Pid`）或不写 |
 | `send(pid, msg)` | `Pid -> 'a -> 'b` | 异步投递任何值 |
-| `recv()` | `'a` | 阻塞，FIFO 取下一条（§8.2：穷尽性检查规则见 §5.2.2） |
+| `recv()` | `'a` | 阻塞，FIFO 取下一条（§8.2：穷尽性检查规则见 §5.3.2） |
 | `recv_after(ms)` | `Int -> 'a` | 至多等 ms 毫秒，超时返回 nil，邮箱不动 |
 | `receive { … }` | 见 §8.2 | 选择性接收 |
 | `self()` | `Pid` | 自身 Pid |
-| `monitor(pid)` | `Pid -> Int` | 返回 Int ref；pid 死亡时收 `['DOWN, ref, pid, reason]` |
+| `monitor(pid)` | `Pid -> Int` | 返回 Int ref；pid 死亡时收 `down.Down(ref, pid, reason)`（`lib/down.ta`） |
 
 ```ta
 fn worker() { print("worker running") }
@@ -691,7 +691,7 @@ fn main() {
 
 ```ta
 fn handler() {
-  // recv：严格 FIFO。符号消息不约束类型 → 漏臂无检查、静默 nil（§5.2.2）
+  // recv：严格 FIFO。符号消息不约束类型 → 漏臂无检查、静默 nil（§5.3.2）
   match recv() {
     'ping -> print("ping")
     'pong -> print("pong")
@@ -713,7 +713,8 @@ fn handler() {
 ### 8.3 进程生命周期与 monitor
 
 - 进程死亡原因：运行期错误（`'divzero`、`cartype`…）或正常返回
-- **正常返回也发 DOWN**：`reason` 为 `nil`；崩溃时 reason 是错误符号
+- **正常返回也发 DOWN**：`reason` 为 `down.Normal`；监控已死亡进程时是 `down.Noproc`；
+  崩溃时是 `down.Other("divzero")` 等——运行期错误符号跨消息边界转成 String
 - 崩溃时 stderr 打印 `** CRASH pid N: 'reason` 及函数位置
 - main 死亡 → 程序结束（exit 1）；非 main 死亡 → 其余进程继续运行
 
@@ -732,7 +733,7 @@ fn main() {
   let ref = monitor(pid)
   send(pid, 'go)
   match recv() {
-    ['DOWN, r, p, reason] -> print("worker died")
+    down.Down(r, p, reason) -> print("worker died")
   }
 }
 ```
@@ -1076,7 +1077,7 @@ match recv() {
 - [ ] 用户函数实参个数必须与声明一致（E0003）
 - [ ] 跨模块引用必须带模块前缀（函数、类型、构造子、const）
 - [ ] spawn 调用 0 参函数；传初值用闭包捕获
-- [ ] monitor 对正常结束也发 DOWN（reason nil）
+- [ ] monitor 对正常结束也发 DOWN（reason `down.Normal`）
 - [ ] Resource 不得 send 给自己 / 进定时消息 / 走 selective receive
 
 ---
@@ -1109,7 +1110,7 @@ fn supervisor(main_pid) {
 
 fn sup_loop(main_pid, pid, ref, count) {
   match recv() {
-    ['DOWN, r, p, reason] -> {
+    down.Down(r, p, reason) -> {
       print("worker died")
       if count < 2 {
         let new_pid = spawn(fn { worker(count + 1) })

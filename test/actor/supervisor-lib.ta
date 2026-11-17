@@ -11,6 +11,7 @@
 // any failure prints FAIL and crashes with 1 / 0).
 // expect: PASS
 
+import "tinyactor:lib/down"
 import "tinyactor:lib/supervisor"
 import "tinyactor:lib/str"
 
@@ -59,7 +60,7 @@ fn s1_loop(ok : Int, n : Int, sup : Pid) -> Int {
       send(p, 'crash)
       s1_loop(ok, n + 1, sup)
     }
-    ['DOWN, r, dead, reason] -> {
+    down.Down(r, dead, reason) -> {
       let ok2 = if n == 3 {
         print("ok - 3 births before give-up (initial + 2 restarts)")
         ok + 1

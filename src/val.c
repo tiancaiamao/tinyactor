@@ -118,8 +118,61 @@ Val val_tuple_new(Proc *p, int n) {
     return box_tag_payload(TAG_TUPLE, (uint64_t)(uintptr_t)ht);
 }
 
+/* DOWN protocol (lib/down.ta) — (down.Down ref pid reason), where reason is
+ * an ExitReason. The VM holds crash reasons as interned symbols (language
+ * machinery); only the named cases get their own variant, everything else
+ * crosses into TA as Other(String). Constructor tags carry the canonical
+ * module prefix (`down.`), exactly as imported ADT constructors do in TA.
+ * Build needs the byte count reserved and the GC gate closed by the caller. */
+int down_msg_heap_bytes(VM *vm, Val reason) {
+    int bytes = ta_heap_object_size(sizeof(HeapTuple) + 4 * (int)sizeof(Val));
+    if (!val_is_nil(reason)) {
+        int noproc = vm_intern_symbol(vm, "noproc");
+        if (!val_is_symbol(reason) || val_get_symbol(reason) != (uint32_t)noproc) {
+            const char *name =
+                val_is_symbol(reason) ? vm_symbol_name(vm, val_get_symbol(reason)) : "unknown";
+            bytes += ta_heap_object_size(sizeof(HeapTuple) + 2 * (int)sizeof(Val));
+            bytes += ta_heap_object_size(sizeof(HeapString) + (int)strlen(name) + 1);
+        }
+    }
+    return bytes;
+}
+
+Val down_msg_build(VM *vm, Proc *p, Val ref, Val pid, Val reason) {
+    int down_sym = vm_intern_symbol(vm, "down.Down");
+    int normal_sym = vm_intern_symbol(vm, "down.Normal");
+    int noproc_sym = vm_intern_symbol(vm, "down.Noproc");
+    int other_sym = vm_intern_symbol(vm, "down.Other");
+
+    Val exit_reason;
+    if (val_is_nil(reason)) {
+        exit_reason = val_symbol((uint32_t)normal_sym);
+    } else if (val_is_symbol(reason) &&
+               val_get_symbol(reason) == (uint32_t)vm_intern_symbol(vm, "noproc")) {
+        exit_reason = val_symbol((uint32_t)noproc_sym);
+    } else {
+        const char *name =
+            val_is_symbol(reason) ? vm_symbol_name(vm, val_get_symbol(reason)) : "unknown";
+        Val text = val_string(p, name, (int)strlen(name));
+        Val other = val_tuple_new(p, 2);
+        HeapTuple *ot = val_as_tuple(other);
+        ot->slot[0] = val_symbol((uint32_t)other_sym);
+        ot->slot[1] = text;
+        exit_reason = other;
+    }
+
+    Val msg = val_tuple_new(p, 4);
+    HeapTuple *ht = val_as_tuple(msg);
+    ht->slot[0] = val_symbol((uint32_t)down_sym);
+    ht->slot[1] = ref;
+    ht->slot[2] = pid;
+    ht->slot[3] = exit_reason;
+    return msg;
+}
+
 /* ============================================================
  * Value predicates & accessors
+
  *
  * val_int / val_from_double / val_get_int / val_get_float / val_to_double
  * live in ta_inline.h as static inline — they sit on the arithmetic

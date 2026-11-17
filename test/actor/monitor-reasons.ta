@@ -1,0 +1,56 @@
+// DOWN 的三种 ExitReason 都由 C 侧构造：正常结束、崩溃、监控已死进程。
+// 用 recv() 做起跑屏障，避免 spawn/monitor 与进程死亡之间的竞态。
+// expect: PASS
+
+import "tinyactor:lib/down"
+
+fn normal_worker() {
+  recv()
+}
+
+fn crash_worker() {
+  recv()
+  1 / 0
+}
+
+fn reason_of() {
+  match recv() {
+    down.Down(_, _, reason) -> reason
+  }
+}
+
+fn main() {
+  let p = spawn(normal_worker)
+  let r1 = monitor(p)
+  send(p, 'go)
+  let normal = reason_of()
+
+  let q = spawn(crash_worker)
+  let r2 = monitor(q)
+  send(q, 'go)
+  let crashed = reason_of()
+  let r3 = monitor(q)
+  let noproc = reason_of()
+
+  let ok_normal = match normal {
+    down.Normal -> true
+    _ -> false
+  }
+  let ok_crashed = match crashed {
+    down.Other("divzero") -> true
+    _ -> false
+  }
+  let ok_noproc = match noproc {
+    down.Noproc -> true
+    _ -> false
+  }
+  if ok_normal {
+    if ok_crashed {
+      if ok_noproc { print("PASS") } else { print("FAIL noproc") }
+    } else {
+      print("FAIL crashed")
+    }
+  } else {
+    print("FAIL normal")
+  }
+}

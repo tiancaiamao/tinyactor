@@ -1,0 +1,18 @@
+// DOWN: the notification the VM sends when a monitored process dies.
+//
+// Built in C (src/scheduler.c for a real death, src/builtin.c for a target
+// that was already dead), declared here so it travels as the same tagged
+// tuple every other message protocol uses (D15). Reasons come from the VM
+// as interned symbols — language machinery, not data — so the catch-all
+// variant crosses into TA as a String. Imported constructors carry their
+// canonical module prefix at runtime (`down.Down`, `down.Other`), which is
+// what the C builder interns (src/val.c).
+pub type ExitReason {
+  Normal
+  Noproc
+  Other(String)
+}
+
+pub type Down {
+  Down(ref : Int, pid : Pid, reason : ExitReason)
+}

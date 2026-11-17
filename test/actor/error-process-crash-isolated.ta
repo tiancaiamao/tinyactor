@@ -14,8 +14,8 @@ fn crash_worker(n) {
 }
 
 // CrashNote: what the observer is told about the crashed worker. A declared
-// record with named slots, not a hand-built [DOWN, ref, pid, reason] nest
-// (four different types cannot live in one homogeneous list, issue #80).
+// record with named slots, not a hand-built cons nest like the old DOWN
+// protocol (four different types cannot live in one homogeneous list, issue #80).
 type CrashNote {
   CrashNote(ref, pid, reason)
 }

@@ -243,8 +243,8 @@ VM *vm_new(void) {
                                            "*",       "/",      "%",      "=",     "!=",    "<",
                                            "<=",      ">",      ">=",     "null?", "cons?", "int?",
                                            "string?", "bytes?", "pid?",   "print", "true",  "false",
-                                           "DOWN",    "nil",    "_",      "and",   "or",    "not",
-                                           "set!",    NULL};
+                                           "nil",     "_",      "and",    "or",    "not",   "set!",
+                                           NULL};
     for (int i = 0; keywords[i]; i++)
         vm_intern_symbol(vm, keywords[i]);
 

@@ -5,6 +5,7 @@
 // Expected stdout: main alive
 // Expected stderr: ** CRASH pid N: 'divzero ... at crasher ...
 
+import "tinyactor:lib/down"
 fn crasher(n) {
   if n == 0 {
     1 / 0
@@ -17,7 +18,7 @@ fn main() {
   let crasher_pid = spawn(fn { crasher(3) })
   let ref = monitor(crasher_pid)
   match recv() {
-    [DOWN, ref2, pid, reason] -> print("main alive")
+    down.Down(ref2, pid, reason) -> print("main alive")
     _ -> print("unexpected")
   }
 }

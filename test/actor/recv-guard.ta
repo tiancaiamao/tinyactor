@@ -14,6 +14,7 @@
 //   then-1
 //   server-done
 
+import "tinyactor:lib/down"
 fn server() {
   receive {
     n when n == 42 -> print("got-42")
@@ -30,6 +31,6 @@ fn main() {
   send(srv, 42)
   let ref = monitor(srv)
   receive {
-    ['DOWN, r, pid, reason] -> print("server-done")
+    down.Down(r, pid, reason) -> print("server-done")
   }
 }

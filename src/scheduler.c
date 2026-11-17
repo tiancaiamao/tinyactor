@@ -646,27 +646,23 @@ void proc_die(VM *vm, Proc *p, Val reason) {
      * loop is the only reader, so every entry inserted before a death is
      * delivered exactly one DOWN here.
      *
-     * The ('DOWN ...) tree is built from several val_pair allocations whose
-     * intermediate pairs live only in C locals, and `reason` sits in a C
-     * local too, so no collection may run here: reserve the walk's room
-     * (one 4-pair message per watcher), then close the gate for the whole
-     * walk. (p's heap is freed a few lines below; the request, if any, is
-     * dropped with it — no drain needed.) */
-    proc_reserve_heap(p, p->watcher_count * 4 * ta_heap_object_size(sizeof(HeapPair)));
+     * The Down value is built from tuple/string allocations held only in C
+     * locals, and `reason` sits in a C local too, so no collection may run
+     * here: reserve the walk's room, then close the gate for the whole walk.
+     * (p's heap is freed a few lines below; the request, if any, is dropped
+     * with it — no drain needed.) */
+    proc_reserve_heap(p, p->watcher_count * down_msg_heap_bytes(vm, reason));
     proc_gc_enter(p);
     for (int i = 0; i < p->watcher_count; i++) {
         int wid = p->watchers[i];
         Proc *w = vm->procs[wid];
         if (!w || atomic_load(&w->state) == PROC_DEAD)
             continue;
-        /* Build ('DOWN ref pid reason) on the CURRENT process p's heap
-         * (p is not executing here → safe), then cross-heap-deliver
-         * via mbox_deliver, which serializes into a malloc'd fragment
-         * and wakes the watcher under its mbox_lock if blocked on recv. */
-        int down_sym = vm_intern_symbol(vm, "DOWN");
-        Val msg = val_pair(p, val_symbol((uint32_t)down_sym),
-                           val_pair(p, p->watcher_refs[i],
-                                    val_pair(p, val_pid(p->pid), val_pair(p, reason, val_nil()))));
+        /* Build the Down value on the CURRENT process p's heap (p is not
+         * executing here → safe), then cross-heap-deliver via mbox_deliver,
+         * which serializes into a malloc'd fragment and wakes the watcher
+         * under its mbox_lock if blocked on recv. */
+        Val msg = down_msg_build(vm, p, p->watcher_refs[i], val_pid(p->pid), reason);
         mbox_deliver(vm, w, msg);
     }
     proc_gc_leave(p);

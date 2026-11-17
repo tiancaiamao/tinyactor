@@ -3,6 +3,7 @@
 // Each round spawns a victim plus W watchers that monitor it concurrently;
 // every watcher must receive exactly one DOWN. Total DOWN count is checked.
 
+import "tinyactor:lib/down"
 fn victim() {
   0
 }
@@ -10,7 +11,7 @@ fn victim() {
 fn watcher(v, main_pid) {
   let ref = monitor(v)
   match recv() {
-    [DOWN, r, p, reason] -> send(main_pid, 1)
+    down.Down(r, p, reason) -> send(main_pid, 1)
   }
 }
 

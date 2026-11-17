@@ -1,4 +1,4 @@
-// docs/tour-lessons.js — TinyActor 交互式教程课程数据（26 课）
+// docs/tour-lessons.js — TinyActor 交互式教程课程数据（27 课）
 //
 // 每个 LESSONS 元素：
 //   id       — 唯一 id（kebab-case）
@@ -103,6 +103,38 @@ const LESSONS = [
     "expected": "1000000"
   },
   {
+    "id": "lists",
+    "section": "Data types",
+    "title": "列表",
+    "text": "列表是 nil 结尾的 cons 链：[a, b, c] 等价于 cons(a, cons(b, cons(c, nil)))。car 取头、cdr 取尾、null? 判空。元素必须同型——[1, \"a\"] 编译期就报错。cons 只用来拼列表（cdr 必须是 nil 或另一个 cons）；点对、记录这种定长数据用下一课的 ADT 表达，不要写 cons(1, 2)。遍历前先判 null?/cons?，控制流在下一组课程讲。",
+    "code": "fn main() {\n  let lst = [1, 2, 3]\n  print(lst)           // (1 2 3)\n  print(car(lst))      // 1\n  print(cdr(lst))      // (2 3)\n  print(cons(0, lst))  // (0 1 2 3)\n  print(null?(lst))    // false\n}",
+    "expected": "(1 2 3)\n1\n(2 3)\n(0 1 2 3)\nfalse"
+  },
+  {
+    "id": "adt",
+    "section": "Data types",
+    "title": "ADT 代数数据类型",
+    "text": "type 声明代数数据类型（ADT）：一个类型可以有多个变体，每个变体带不同的字段。直接用构造子名造值，名字或参数个数写错都是编译期错误。ADT 让数据形状自文档化。带参变体在运行时是带标签的元组：Add(2, 5) 是 (tuple Add 2 5)；点对、记录都该这么表达，而不是 cons。至于怎么把字段取出来，下一组课程的 match 会按构造子解构。",
+    "code": "type Shape {\n  Circle(radius : Int)\n  Rect(w : Int, h : Int)\n  Empty\n}\n\nfn main() {\n  print(Circle(radius: 3))   // (tuple Circle 3)\n  print(Rect(4, 5))          // (tuple Rect 4 5)\n  print(Empty)               // Empty\n}",
+    "expected": "(tuple Circle 3)\n(tuple Rect 4 5)\nEmpty"
+  },
+  {
+    "id": "record-labels",
+    "section": "Data types",
+    "title": "按字段名构造（record）",
+    "text": "字段名写在声明里，这个类型就能当 record 用：构造时按名字给值 Point(x: 1, y: 2)，顺序随意；照旧全按位置 Point(1, 2) 也合法。改一个字段不必把其余字段再抄一遍——Point(..p, y: 9) 拷贝 p、只改 y，字段有几个都一样长。一次调用要么全位置要么全标签，混写编译期报错；名字拼错、少给字段也都是编译期报错，不会留到运行时变成空槽。record 不是新类型：运行时仍是带标签元组，解构仍按位置写（match 见下一课）。",
+    "code": "type Point { Point(x : Int, y : Int) }\n\nfn main() {\n  let p = Point(x: 1, y: 2)    // 按名字构造，顺序随意\n  let q = Point(..p, y: 9)     // 拷贝 p，只改 y\n  print(p)                     // (tuple Point 1 2)\n  print(q)                     // (tuple Point 1 9)\n}",
+    "expected": "(tuple Point 1 2)\n(tuple Point 1 9)"
+  },
+  {
+    "id": "generic-adt",
+    "section": "Data types",
+    "title": "泛型 ADT",
+    "text": "ADT 可以带类型参数，像 List(a) 这样对任意元素类型复用。Nil 是空列表，Cons(head, tail) 把一个元素接到列表前面。类型推导能推出这是 List(Int)：Cons(1, Cons(2, Cons(3, Nil)))。下一组课程用 match 按 Nil/Cons 逐变体处理它。",
+    "code": "type List(a) { Nil; Cons(a, List(a)) }\n\nfn main() {\n  let lst = Cons(1, Cons(2, Cons(3, Nil)))\n  print(lst)\n}",
+    "expected": "(tuple Cons 1 (tuple Cons 2 (tuple Cons 3 Nil)))"
+  },
+  {
     "id": "if-else",
     "section": "Flow control",
     "title": "if / else",
@@ -114,7 +146,7 @@ const LESSONS = [
     "id": "match-basics",
     "section": "Flow control",
     "title": "match 基础",
-        "text": "match 是表达式：按顺序尝试每个分支，第一个匹配上的分支的值就是整个 match 的结果。构造子模式同时做两件事——判断加拆包：Cat(name, age) 要求这个值是 Cat 构造出来的，并把两个字段交给 name、age，不用的字段写 _。这里的 Animal 先用着看效果，type 声明本身在第 16 课细讲；注意 describe 是真的在读字段，名字和年龄都进了结果。",
+        "text": "match 是表达式：按顺序尝试每个分支，第一个匹配上的分支的值就是整个 match 的结果。构造子模式同时做两件事——判断加拆包：Cat(name, age) 要求这个值是 Cat 构造出来的，并把两个字段交给 name、age，不用的字段写 _。Animal 就是前面 ADT 一节见过的声明；注意 describe 是真的在读字段，名字和年龄都进了结果。",
     "code": "type Animal {\n  Cat(String, Int)\n  Dog(String, Int)\n}\n\nfn describe(a) {\n  match a {\n    Cat(name, age) -> str.concat(str.concat(name, \" is a cat aged \"), str.from_int(age))\n    Dog(name, _) -> str.concat(name, \" is a dog\")\n  }\n}\n\nfn main() {\n  print(describe(Cat(\"Nubi\", 2)))\n  print(describe(Dog(\"Rex\", 3)))\n}",
     "expected": "Nubi is a cat aged 2\nRex is a dog"
   },
@@ -135,40 +167,8 @@ const LESSONS = [
     "expected": "red\ngreen\nblue\nPASS"
   },
   {
-    "id": "lists",
-    "section": "Data types",
-    "title": "列表",
-    "text": "列表是 nil 结尾的 cons 链：[a, b, c] 等价于 cons(a, cons(b, cons(c, nil)))。car 取头、cdr 取尾、null? 判空。元素必须同型——[1, \"a\"] 编译期就报错。cons 只用来拼列表（cdr 必须是 nil 或另一个 cons）；点对、记录这种定长数据用 ADT 表达，不要写 cons(1, 2)。",
-    "code": "fn len(l) {\n  if null?(l) {\n    0\n  } else {\n    1 + len(cdr(l))\n  }\n}\n\nfn main() {\n  let lst = [1, 2, 3]\n  print(lst)           // (1 2 3)\n  print(car(lst))      // 1\n  print(cdr(lst))      // (2 3)\n  print(len(lst))      // 3\n  print(cons(0, lst))  // (0 1 2 3)\n}",
-    "expected": "(1 2 3)\n1\n(2 3)\n3\n(0 1 2 3)"
-  },
-  {
-    "id": "adt",
-    "section": "Data types",
-    "title": "ADT 代数数据类型",
-    "text": "type 声明代数数据类型：一个类型可以有多个构造器，每个构造器带不同的参数。构造器名必须严格匹配，用不同构造器或不同参数个数构造的值不会误匹配。ADT 让数据形状自文档化。带参构造子在运行时就是一个带标签的元组：Point(1, 2) 是 (tuple Point 1 2)，tuple-len / tuple-ref 能读它（日常用模式解构，不必碰底层表示）；点对、记录都该这么表达，而不是 cons。",
-    "code": "type Msg {\n  Add(a, b)\n  Mul(a, b)\n}\n\nfn eval(m) {\n  match m {\n    Add(a, b) -> a + b\n    Mul(a, b) -> a * b\n  }\n}\n\nfn main() {\n  print(eval(Add(2, 5)))\n  print(eval(Mul(2, 5)))\n}",
-    "expected": "7\n10"
-  },
-  {
-    "id": "record-labels",
-    "section": "Data types",
-    "title": "按字段名构造（record）",
-    "text": "字段名写在声明里，这个类型就能当 record 用：构造时按名字给值 Point(x: 1, y: 2)，顺序随意；照旧全按位置 Point(1, 2) 也合法。改一个字段不必把其余字段再抄一遍——Point(..p, y: 9) 拷贝 p、只改 y，字段有几个都一样长。一次调用要么全位置要么全标签，混写编译期报错；名字拼错、少给字段也都是编译期报错，不会留到运行时变成空槽。record 不是新类型：运行时仍是带标签元组，match 仍按位置解构。",
-    "code": "type Point { Point(x : Int, y : Int) }\n\nfn main() {\n  let p = Point(x: 1, y: 2)    // 按名字构造，顺序随意\n  let q = Point(..p, y: 9)     // 拷贝 p，只改 y\n  match q {\n    Point(x, y) -> print(x * 100 + y)\n  }\n  match p {\n    Point(x, y) -> print(x * 100 + y)\n  }\n  print(q)                     // 运行时还是带标签元组\n}",
-    "expected": "109\n102\n(tuple Point 1 9)"
-  },
-  {
-    "id": "generic-adt",
-    "section": "Data types",
-    "title": "泛型 ADT",
-    "text": "ADT 可以带类型参数，像 List(a) 这样对任意元素类型复用。Nil 是空列表，Cons(head, tail) 把一个元素接到列表前面。类型推导能推出这是 List(Int)：Cons(1, Cons(2, Cons(3, Nil)))。",
-    "code": "type List(a) { Nil; Cons(a, List(a)) }\n\nfn sum(lst) {\n  match lst {\n    Nil -> 0\n    Cons(head, tail) -> head + sum(tail)\n  }\n}\n\nfn main() {\n  let lst = Cons(1, Cons(2, Cons(3, Nil)))\n  print(sum(lst))\n}",
-    "expected": "6"
-  },
-  {
     "id": "result",
-    "section": "Data types",
+    "section": "Flow control",
     "title": "Result 处理错误",
     "text": "Result(a, e) 是处理错误的惯用 ADT：Ok(v) 表示成功，Error(e) 表示失败（标准库 lib/result.ta 里有形状相同的 Result(t, e)，但构造器叫 Ok / Err；这里为了不用 import 先自己声明一份）。函数返回 Result，调用方用 match 显式处理两种情况。这避免了异常，让错误成为数据流的一部分。",
     "code": "type Result(a, e) { Ok(a); Error(e) }\n\nfn safe_div(a, b) {\n  if b == 0 {\n    Error(\"division by zero\")\n  } else {\n    Ok(a / b)\n  }\n}\n\nfn main() {\n  match safe_div(10, 2) {\n    Ok(v) -> print(v)\n    Error(e) -> print(e)\n  }\n  match safe_div(1, 0) {\n    Ok(v) -> print(v)\n    Error(e) -> print(e)\n  }\n}",
@@ -211,16 +211,16 @@ const LESSONS = [
     "section": "Actors",
     "title": "选择性接收",
     "text": "receive { pattern -> body } 会扫描邮箱，跳过不匹配的消息，直到找到匹配的。这突破了严格 FIFO 的限制：即使 'first 先到，也可以先接收 'second。被跳过的消息留在邮箱里，之后还能收到。",
-    "code": "fn server() {\n  receive {\n    'second -> print(\"got-second\")\n  }\n  receive {\n    'first -> print(\"then-first\")\n  }\n  receive {\n    n -> if n == 42 { print(\"PASS\") } else { print(\"FAIL\") }\n  }\n}\n\nfn main() {\n  let srv = spawn(fn { server() })\n  send(srv, 'first)\n  send(srv, 'second)\n  send(srv, 42)\n  let ref = monitor(srv)\n  receive {\n    ['DOWN, r, pid, reason] -> print(\"server-done\")\n  }\n}",
+    "code": "import \"tinyactor:lib/down\"\n\nfn server() {\n  receive {\n    'second -> print(\"got-second\")\n  }\n  receive {\n    'first -> print(\"then-first\")\n  }\n  receive {\n    n -> if n == 42 { print(\"PASS\") } else { print(\"FAIL\") }\n  }\n}\n\nfn main() {\n  let srv = spawn(fn { server() })\n  send(srv, 'first)\n  send(srv, 'second)\n  send(srv, 42)\n  let ref = monitor(srv)\n  receive {\n    down.Down(r, pid, reason) -> print(\"server-done\")\n  }\n}",
     "expected": "got-second\nthen-first\nPASS\nserver-done"
   },
   {
     "id": "monitor-down",
     "section": "Actors",
     "title": "monitor / DOWN",
-    "text": "monitor(pid) 监控另一个进程并返回一个 ref。被监控进程死亡时，监控方会收到 ['DOWN, ref, pid, reason] 消息。这是构建 supervisor 的基础。这里 worker 除零崩溃，main 收到 DOWN 通知；VM 还会额外打一行 ** CRASH 报告（带 pid 与帧号），那不是 print 的输出。",
-    "code": "fn worker() {\n  1 / 0\n}\n\nfn main() {\n  let pid = spawn(worker)\n  let ref = monitor(pid)\n  match recv() {\n    ['DOWN, r, p, reason] -> print(\"DOWN received\")\n  }\n}",
-    "expected": "DOWN received"
+    "text": "monitor(pid) 监控另一个进程并返回一个 ref。被监控进程死亡时，监控方收到 down.Down(ref, pid, reason)（定义在 lib/down.ta，需 import）。reason 的类型是 ExitReason：正常结束是 down.Normal，监控已死进程是 down.Noproc，其余错误是 down.Other(String)——崩溃原因在这里已经是字符串，不再是内部符号。这是构建 supervisor 的基础。这里 worker 除零崩溃，main 从 Other 里取出 \"divzero\"；VM 还会额外打一行 ** CRASH 报告（带 pid 与帧号），那不是 print 的输出。",
+    "code": "import \"tinyactor:lib/down\"\n\nfn worker() {\n  1 / 0\n}\n\nfn main() {\n  let pid = spawn(worker)\n  let ref = monitor(pid)\n  match recv() {\n    down.Down(_, _, down.Other(reason)) -> print(str.concat(\"DOWN: \", reason))\n    down.Down(_, _, _) -> print(\"DOWN: unexpected reason\")\n  }\n}",
+    "expected": "DOWN: divzero"
   },
   {
     "id": "process-isolation",
