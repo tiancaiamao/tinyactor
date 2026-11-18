@@ -64,6 +64,8 @@ VM *ta_host_init(void) {
         vm_register(vm, bare_preds[i].name, bare_preds[i].fn, 1);
     vm_register_num_modules(vm);
     vm_register_vm_module(vm);
+    vm_register_actor_primitives(vm);
+
 #ifdef __EMSCRIPTEN__
     /* 原生构建里 str/file/os 是 lazy dylib；wasm 没有 dlopen，它们被静态
      * 链接进 VM（src/host-wasm.c 是那张表）。 */

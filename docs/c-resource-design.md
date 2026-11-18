@@ -122,14 +122,14 @@ actor，或 spawn 出来的新 actor。
 2. **fragment 里每个副本**：`cons(r, r)` 有几个副本改几个；
 3. **接收方堆里的副本**（spawn 路径）：`owner_pid = 子 pid`。
 
-投递路径（`mbox_deliver` 是收口，4 个调用点全部核实：`do_builtin` 的 LB_SEND、
-`proc_die` 的 DOWN 广播、`b_monitor` 的即时 DOWN、
+投递路径（`mbox_deliver` 是收口，4 个调用点全部核实：`cfunc_send`、
+`proc_die` 的 DOWN 广播、`cfunc_monitor` 的即时 DOWN、
 `lib/timer.c` fire）：
 
 | 路径 | 代码位置 | 归属改写时机 |
 |---|---|---|
 | `send(pid, msg)` | `mbox_deliver`（`src/scheduler.c`） | `mbox_lock` 内**入队成功后**改写：发送方自己堆 header + fragment 每个副本。入队失败（`PROC_DEAD` → `free(frag)`，`mbox_deliver` 的 DEAD 早退分支）**不动**发送方堆 header，归属留在发送方 |
-| spawn | `proc_spawn_begin`（`src/scheduler.c`；字节码 `LB_SPAWN` 与原生 `rt_b_spawn` 共用这一份） | `val_deep_copy(np, clos)` 之后、`val_set_resource_owner` 处（调用方建帧 + `runq_enqueue` 之前）改写父堆 header + 子堆副本。深拷到入队之间两个堆都不移动（reserve 的是子堆、建帧只做栈操作），改写地址稳定；子进程尚不可运行，无并发 |
+| spawn | `proc_spawn_begin`（`src/scheduler.c`；`cfunc_spawn` 与原生 `rt_b_spawn` 共用这一份） | `val_deep_copy(np, clos)` 之后、`val_set_resource_owner` 处（调用方建帧 + `runq_enqueue` 之前）改写父堆 header + 子堆副本。深拷到入队之间两个堆都不移动（reserve 的是子堆、建帧只做栈操作），改写地址稳定；子进程尚不可运行，无并发 |
 | `recv` | `mbox_pop`（`src/scheduler.c`） | 不改。归属已在投递时写好，`val_deep_copy` 原样拷 header |
 | timer | `timer_register`（`lib/timer.c`）、fire 路径 | **不支持**（见下）。fire 时 `msg = t->frag->root` 指向 malloc 快照而非任何堆，改写是 no-op——依赖「register 已拒绝资源」使该分支不可达 |
 
@@ -200,7 +200,7 @@ void、`timer_register` 失败返回 0 且 `timer_c_send_after` 静默 `val_int(
 （`timer_register` 存 `t->frag`、fire 后 rearm/free 两处）——现状没有任何错误通道，不写死机制每个禁令都会
 退化成静默丢数据的洞。
 
-**LB_SEND 对已死目标静默丢弃不经 frag_copy**（`do_builtin` 的 LB_SEND DEAD 早退）：对资源无害
+**`cfunc_send` 对已死目标静默丢弃不经 frag_copy**（DEAD 早退）：对资源无害
 （归属留发送方，发送方后续 GC/死亡会释放），与 Erlang 语义一致，见 §5.4。
 
 ## 5. 并发分析（这一节回答「GC 会不会跟另一边使用冲突」）
@@ -378,10 +378,10 @@ dtor 会在 GC 尾声（fromspace 扫描中）、`proc_die`、`vm_free` 里跑�
 | `src/val.c` | boxing、打印（`<resource>`）、`val_deep_copy`（含 owner 校验 + payload 去重）、`val_calc_heap_size`、**`val_converge_copy`**。注意：`val_converge_copy` 对**堆内对象按引用透传**（`!val_in_chunk → 保留原引用` 那个分支），资源 Val 穿过回调收敛**不会**产生 header 副本，天然安全——需要加的只是可选的 owner 校验分支与「未知 in-chunk tag → nil」的防御。而 `val_deep_copy` 的 else→nil 分支会把漏加的资源**静默变 nil**——所有 Val 遍历 switch 的 default 建议一律 `fatal`，不要 nil |
 | `src/gc.c` | `obj_size`（default abort 兜住未知 type）、`gc_copy_val`、`gc_scan_tospace`（类型断言 `GC_ASSERT`）各一行；新增 fromspace 未转发扫描（§6.2）。注意 forwarding 指针写在 obj+2 起 8 字节（`gc_copy_obj` 里写 FLAG_FORWARDED 处），覆盖 padding(2..4) + `owner_pid`(4..8) + **`res` 低 2 字节(8..10)**——被转发的 fromspace 副本只看 `FLAG_FORWARDED`，字段不再被读，注释点明（含 res） |
 | `src/scheduler.c` | `proc_spawn_begin`（spawn 的前半程）是归属改写插入点（`val_deep_copy` → `val_set_resource_owner`，入队在建帧之后由调用方做）；`mbox_deliver` 入队成功后改写归属，**需要第三次遍历 msg 树**（§4 实现前提）；`frag_calc_size`（switch 无 default 计数——漏分支 = fragment 缓冲区按小分配）与 `frag_copy` 加资源分支 + 收口校验（owner / self-send / 重复 payload，NULL-safe）；`proc_die` 扫活堆 + drain fragment（§6.3） |
-| `src/builtin.c` | `b_recv_peek`（其中做 deep copy 那步）遇资源报错（§4 peek 禁令）；`b_recv_peek`/commit 路径加测试 |
+| `src/builtin.c` | `cfunc_recv_peek`（其中做 deep copy 那步）遇资源报错（§4 peek 禁令）；peek/commit 路径加测试 |
 | `src/api.c` | 模块 API 实现；`vm_free` teardown 扫描（§6.4，覆盖 main 自己的堆） |
-| `src/vm.c` | `LB_SPAWN` 只剩「调 `proc_spawn_begin` + 建帧 + 入队」三行；`LB_SEND` 的 DEAD 早退不经 frag_copy（§5.4）；`PROC_DIE_ISOLATED` 作为收口违规的报错机制 |
-| `lib/timer.c` | `timer_register` 在注册线程上就拒绝资源值（`val_has_resource` → `tls_current_proc->cfunc_die = "resource"` → 返回 0，由 `do_builtin` 收口成进程隔离错误，不是静默 0）；fire 路径（`timer_fire_expired` → `mbox_deliver`）因此不需要资源分支 |
+| `src/vm.c` | `cfunc_spawn` 只剩「调 `proc_spawn_begin` + 建帧 + 入队」三行；`cfunc_send` 的 DEAD 早退不经 frag_copy（§5.4）；`do_cfunc_die` 作为收口违规的报错机制 |
+| `lib/timer.c` | `timer_register` 在注册线程上就拒绝资源值（`val_has_resource` → `tls_current_proc->cfunc_die = "resource"` → 返回 0，由 `do_ccall` 收口成进程隔离错误，不是静默 0）；fire 路径（`timer_fire_expired` → `mbox_deliver`）因此不需要资源分支 |
 | `docs/c-module.md` | §5「裸 int 句柄 + 槽表 + generation」整段退休，换成资源值一条路 + dtor 约束（§6.1） |
 | `docs/ta-language-spec.md` | `Resource` 不透明类型 + 「资源不得 send 给自己、不得进定时消息、不得走 selective receive」三条限制 + 违规 = 进程隔离错误 |
 | `lib/buffer.c` | 删表/锁，`Buffer { Buf(Resource) }`，dtor = free(data) |

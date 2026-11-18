@@ -70,7 +70,6 @@ const OP_RET = 24
 const OP_MAKE_CLOSURE = 25
 const OP_GLOBAL = 26
 const OP_RESERVE = 27
-const OP_BUILTIN = 28
 // 压栈融合：*P = 「取值 + IPush」合成一条（实参传递热路径）。
 const OP_LOADP = 29
 const OP_CONSTP = 30
@@ -95,16 +94,6 @@ const OP_TUPLE = 42
 const OP_TUPLE_REF = 43
 const OP_TUPLE_LEN = 44
 
-// actor 内建 id（vm.c 的 builtin 表镜像；compile_general 在编译期固化）
-const B_SELF = 0
-const B_SPAWN = 1
-const B_SEND = 2
-const B_RECV = 3
-const B_MONITOR = 4
-const B_RECV_AFTER = 5
-const B_RECV_PEEK = 6
-const B_RECV_COMMIT = 7
-
 // ---------- 表示 ----------
 // Const / Expr / Top（form 层的 parse 产物）在 ast.ta；本文件从 Expr 起消费。
 
@@ -115,7 +104,7 @@ pub type FnName {
 }
 
 // 指令树。IF 是唯一复合指令：两分支各自成段，展平期回填跳转。
-// 融合指令（*P / *.I / IIfP·IIfI / IBuiltin）由 fuse 产出，语义都是「少一次
+// 融合指令（*P / *.I / IIfP·IIfI）由 fuse 产出，语义都是「少一次
 // 取指」，net 栈效应与未融合形态一致（depth 各自成 case）。
 type Ins {
   IConst(c : ast.Const)
@@ -133,7 +122,6 @@ type Ins {
   IOpI(op : Int, imm : Int)
   ICall(n : Int)
   ITCall(n : Int)
-  IBuiltin(id : Int, n : Int)
   IClos(fid : Int, nfree : Int)
   IRet(nargs : Int)
   IReserve(n : Int)
@@ -279,23 +267,15 @@ pub fn bare_cfunc(name : Symbol) -> Bool {
     'pid? -> true
     'float? -> true
     'bool? -> true
+    'self -> true
+    'spawn -> true
+    'send -> true
+    'recv -> true
+    'recv_after -> true
+    'recv_peek -> true
+    'recv_commit -> true
+    'monitor -> true
     _ -> false
-  }
-}
-
-// op_builtin 派发表（vm.c 的 LB_* 镜像）：actor 原语不走 IGlob/按名路径 ——
-// bare_cfunc 不收它们。arity 由运行期检查（与 CALL 的 fn_args 检查同策略）。
-fn builtin_id(name : Symbol) -> option.Option(Int) {
-  match name {
-    'self -> option.Some(B_SELF)
-    'spawn -> option.Some(B_SPAWN)
-    'send -> option.Some(B_SEND)
-    'recv -> option.Some(B_RECV)
-    'recv_after -> option.Some(B_RECV_AFTER)
-    'recv_peek -> option.Some(B_RECV_PEEK)
-    'recv_commit -> option.Some(B_RECV_COMMIT)
-    'monitor -> option.Some(B_MONITOR)
-    _ -> option.None
   }
 }
 
@@ -380,23 +360,13 @@ fn free_sym(name : Symbol, bound : List(Symbol), outer : List(Symbol), g : List(
 }
 
 // 全局可解 = define 名，或宿主 cfunc 名（裸白名单 / 带点）。
-// 名字是否可用：locals/全局表命中，或宿主侧可解析的名字（裸 cfunc / 带点
-// 模块 cfunc / actor 内建原语）。actor 原语不走 IGlob 而走 builtin_id 固化
-// 的整数 id（compile_general），故它们同样「有名字可解析」——本判据与
-// compile_general 的分派必须一致，否则 receive 脱糖产物（recv_peek /
-// recv_commit）会被这里误判成未定义名。
+// 名字是否可用：locals/全局表命中，或宿主侧可解析的名字。actor 原语
+// 现在是裸名 cfunc（见 bare_cfunc / host.c），与普通 cfunc 同一条解析路。
 fn resolvable(name : Symbol, g : List(Bind)) -> Bool {
   if assoc_find(name, g) >= 0 {
     true
   } else {
-    if lib_cfunc_head(name) { true } else { is_builtin(name) }
-  }
-}
-
-fn is_builtin(name : Symbol) -> Bool {
-  match builtin_id(name) {
-    option.Some(_) -> true
-    option.None -> false
+    lib_cfunc_head(name)
   }
 }
 
@@ -641,29 +611,8 @@ fn compile_tuple(args : List(ast.Expr), g : List(Bind), c : Ctx) -> CompRes {
 // 一般调用协议（与 tavm CALL n 对齐）：f 入栈；a1..a(n-1) 逐个 IPUSH；末参留
 // acc；CALL n = 参数数 + 1（CALL 内 flush acc 作末参 → 压 cont 三槽 → 整帧成形）。
 // 0 参是特例：不发 IPUSH，f 留在 acc 由 CALL 的 flush 充当 fn 槽。
-// 调用：内建 actor 原语（self/spawn/send/recv…）在编译期固化成整数 id，其余
-// 走一般调用。派发表是 builtin_id。
+// actor 原语（self/spawn/send/recv…）也是普通裸名 cfunc，没有专用 IR。
 fn compile_general(callee : ast.Expr, args : List(ast.Expr), g : List(Bind), c : Ctx, tail : Bool) -> CompRes {
-  match callee {
-    ast.ESym(name) -> match builtin_id(name) {
-      option.Some(bid) -> builtin_call(bid, args, g, c)
-      option.None -> compile_general_named(callee, args, g, c, tail)
-    }
-    _ -> compile_general_named(callee, args, g, c, tail)
-  }
-}
-
-// 内建调用：协议与 CALL 一致（前 n-1 参压栈、末参留 acc）但不发 fn 槽。
-fn builtin_call(bid : Int, args : List(ast.Expr), g : List(Bind), c : Ctx) -> CompRes {
-  match compile_args(args, g, c) {
-    CompRes(ac, c1) -> CompRes(cat(ac,[IBuiltin(bid, len(args))]), c1)
-  }
-}
-
-// 一般调用协议（与 tavm CALL n 对齐）：f 入栈；a1..a(n-1) 逐个 IPUSH；末参留
-// acc；CALL n = 参数数 + 1（CALL 内 flush acc 作末参 → 压 cont 三槽 → 整帧成形）。
-// 0 参是特例：不发 IPUSH，f 留在 acc 由 CALL 的 flush 充当 fn 槽。
-fn compile_general_named(callee : ast.Expr, args : List(ast.Expr), g : List(Bind), c : Ctx, tail : Bool) -> CompRes {
   let n = len(args) + 1
   match compile_head(callee, g, c) {
     CompRes(fc, c1) -> match args {
@@ -992,7 +941,6 @@ fn flat2(ins : List(Ins), ws : List(Int), pool : List(ast.Const)) -> WRes {
       IOpI(op, imm) -> flat2(rest, emit2(ws, op - OP_ADD + OP_ADD_I, imm), pool)
       ICall(n) -> flat2(rest, emit2(ws, OP_CALL, n), pool)
       ITCall(n) -> flat2(rest, emit2(ws, OP_TCALL, n), pool)
-      IBuiltin(id, n) -> flat2(rest, emit3(ws, OP_BUILTIN, id, n), pool)
       IClos(fid, nfree) -> flat2(rest, emit3(ws, OP_MAKE_CLOSURE, fid, nfree), pool)
       IRet(k) -> flat2(rest, emit2(ws, OP_RET, k), pool)
       IReserve(n) -> flat2(rest, emit2(ws, OP_RESERVE, n), pool)
@@ -1103,8 +1051,6 @@ fn depth(code : List(Ins), d : Int, m : Int) -> DepthRes {
       IOpI(op, _) -> if binop_p(op) { depth(rest, d - 1, m) } else { depth(rest, d, m) }
       ICall(n) -> depth(rest, d + 1 - n, bigger(d + 4, m))
       ITCall(n) -> depth(rest, d + 1 - n, bigger(d + 4, m))
-      // 内建调用同样把 n 个实参移出求值栈（净 0），峰值与 CALL 同形。
-      IBuiltin(_, n) -> depth(rest, d, bigger(d + n - 1, m))
       IClos(_, nfv) -> depth(rest, d + 1 - nfv, bigger(d + 1 - nfv, m))
       // tuple：前 n-1 个实参在栈上、末参在 acc，结果回 acc（净 -(n-1)）。
       // n == 0 是空元组：不碰栈（净 0），峰值 = 入口深度。

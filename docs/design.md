@@ -211,10 +211,11 @@ tag 区间整体落在 IEEE 754「指数全 1、符号位 1」的负 NaN 区（i
 ### 4.2 字节码指令（设计清单）
 
 > 状态：下表是**设计期清单**，与现行 ISA 不完全一致。现行解释器执行 `ta.h` 的
-> `LOP_*` 枚举（`vm.c` 的 `dispatch[LOP_COUNT]`，37 条）；actor 原语（spawn/send/
-> recv/monitor）已改为 `OP_BUILTIN`/`LOP_BUILTIN` 分派，`ta.h` 的 `OpCode` 枚举里
-> 只剩保留洞（`OP_SELF` 存活）；`LOAD_MODULE` / `CALL_INDIRECT` / `MONITOR_DEMON`
-> 不在任何枚举中；`OP_ENTER` / `OP_CCALL_NAME` / `OP_NE` / `OP_PUSH_FLOAT` /
+> `LOP_*` 枚举（`vm.c` 的 `dispatch[LOP_COUNT]`）；actor 原语（spawn/send/
+> recv/monitor）不是 opcode，而是宿主注册的裸名 cfunc，走
+> `CALL → TAG_NATIVE → do_ccall`；`ta.h` 的 `OpCode` 枚举里只留历史保留洞。
+> `LOAD_MODULE` / `CALL_INDIRECT` / `MONITOR_DEMON` 不在任何枚举中；
+> `OP_ENTER` / `OP_CCALL_NAME` / `OP_NE` / `OP_PUSH_FLOAT` /
 > `OP_IS_SYMBOL` 等现行 opcode 本表未列。
 
 | 类别 | 指令 | 说明 |
@@ -298,7 +299,7 @@ Per-process semispace copying GC：
 │   ├── gc.c           per-process semispace GC
 │   ├── val.c          NaN-boxing 值表示
 │   ├── api.c          VM 自省 + 模块注册
-│   ├── builtin.c      LOP_BUILTIN 分派表
+│   ├── builtin.c     actor 原语的宿主 cfunc 实现
 │   ├── host.c         宿主共用的初始化（裸名 cfunc 白名单，只有一份）
 │   ├── resource.c     不透明 C 资源值（docs/c-resource-design.md）
 │   ├── num.c/prof.c   数值基元 / 采样

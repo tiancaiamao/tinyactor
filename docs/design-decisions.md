@@ -182,7 +182,13 @@ lib/demo.c + `docs/c-module.md` §3 重写 + 新增
 
 ## D12. actor primitive 从专用 opcode 迁到 OP_BUILTIN 表（PR E / phase 4a+4b）
 
-**结论**：actor primitive 不是独立 opcode，而是 `OP_BUILTIN, id, n`（opcode 49）+
+> **现状（后续重构已取代本节）**：`OP_BUILTIN` / `B_*` / `LB_*` / `do_builtin`
+> 已整体退休。八个原语现在是宿主注册的裸名 cfunc，走
+> `CALL → TAG_NATIVE → do_ccall`；recv 家族用 `vm_yield_recv` 在 `mbox_lock`
+> 窗口内发布 `TA_YIELD_RECV`，由 `do_ccall` 收口阻塞现场。opcode 表只剩 Lisp
+> 内核指令。本节保留为决策历史。
+
+**结论（当时的设计）**：actor primitive 不是独立 opcode，而是 `OP_BUILTIN, id, n`（opcode 49）+
 编译期固化的整数 `id`，由 `do_builtin`（`src/vm.c`）按 `LB_*` switch 分派。
 **唯一的 id 空间是 `B_*`（`lib/bootstrap/compile.ta`）↔ `LB_*`（`ta.h`）**，
 现存 8 个：`B_SELF / B_SPAWN / B_SEND / B_RECV / B_RECV_AFTER / B_RECV_PEEK /

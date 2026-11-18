@@ -33,7 +33,7 @@
  * 的产物由不同工具在不同时间生成（cc 编 .so，TA 编译器出 .tabc），陈旧与否
  * 也不同步，所以不共用一个计数器：加一条 opcode 会同时撞两把（指令集变了，
  * 图像编码也变了），改一个模块可见的结构体只撞这把。 */
-#define TA_ABI_VERSION 2
+#define TA_ABI_VERSION 3
 
 __attribute__((weak)) int ta_abi_version(void) { return TA_ABI_VERSION; }
 
@@ -126,7 +126,7 @@ static inline Val lbox(uint16_t tag, uint64_t payload) {
 #define MAX_PROCS (1024 * 1024)
 
 /* Proc.recv_deadline_ms sentinel: the deadline fired while the proc was
- * blocked in recv_after (BUILTIN_RECV_AFTER) — the timeout won, so the
+ * blocked in recv_after (the recv_after cfunc) — the timeout won, so the
  * builtin must return nil and leave the mailbox untouched (messages arriving
  * after expiry belong to the next receive). */
 #define RECV_AFTER_EXPIRED (-2)
@@ -278,10 +278,11 @@ typedef struct Proc {
                       * pushed frame region must stay clear of the heap,
                       * because the pushes that fill it happen later
                       * (proc_stack_lo in ta_inline.h). */
-    /* 0/1: set by a C module callback that cannot finish inline (vm_yield),
-     * read by do_ccall when the C function returns — it re-publishes the
-     * proc as blocked (see the blocked-boundary protocol in src/vm.c). */
-    int yield_requested;
+    /* Set by a C function that cannot finish inline; read by do_ccall on
+     * return. TA_YIELD_IO is set by vm_watch_fd/vm_yield (poller wakes it);
+     * TA_YIELD_RECV by vm_yield_recv, which must be called while holding
+     * p->mbox_lock — do_ccall finishes the block under that same lock. */
+    int cfunc_yield;
 
     /* ---- 解释器恢复态："这个 proc 跑到哪了"（run_proc 的唯一入口约定）----
      *
@@ -297,8 +298,8 @@ typedef struct Proc {
      * 指令自带操作数 k（= 本函数实参数，编译期静态），沿 base+k+1 定位 cont
      * 三槽（见 docs/backend.md）。 */
     int pc, base, cbase;
-    Val acc;     /* 末参/结果交接槽：do_builtin/do_ccall 经它传参（CALL 语义：
-                  * 末参在 acc，结果写回 acc），阻塞时也存这 */
+    Val acc;     /* 末参/结果交接槽：do_ccall 经它传参（CALL 语义：末参在
+                  * acc，结果写回 acc），阻塞时也存这 */
     int has_acc; /* recv 阻塞不读 acc（恒 0），ccall 重入置 1 */
     const char *cfunc_die; /* cfunc 收口违规（如消息带资源）时置为原因符号名，
                             * do_ccall 返回后检出 → 发布现场、proc_die 隔离死。
@@ -434,13 +435,12 @@ static inline void proc_set_mem(Proc *p, uint8_t *mem, int size) {
     p->stk = (Val *)(mem + size);
 }
 
-/* ---- actor 原语与调度 ----
+/* ---- 调度原语 ----
  *
- * spawn/send/recv/self 编译为 LOP_BUILTIN：编译期固化整数 id，运行期
- * switch 派发（CALL 只服务 VM 自己的函数，cfunc 走 TAG_NATIVE 的 C
- * 模块协议 —— 分层：opcode / op_call / op_builtin / cfunc）。recv 可能
- * 阻塞，解释器状态按 proc 存活期存在 Proc 的恢复态字段里；阻塞时 pc 不前进，
- * 唤醒后重执行本条指令。 */
+ * self/spawn/send/recv/... 已不是 opcode：它们是宿主注册的裸名 cfunc，
+ * 与 str.concat / file.read 同走 CALL → TAG_NATIVE → do_ccall。recv 类
+ * 原语的挂起用 cfunc_yield 协议，解释器状态存在 Proc 的恢复态字段里；
+ * 阻塞时 pc 不前进，唤醒后重执行同一条 CALL。opcode 本身只剩 Lisp 内核。 */
 
 /* 图像格式版本（与 bytecode.ta write_bc 的头词严格一致）：v4 = 增加 tuple
  * 四条指令（LOP_TUPLE/TUPLEP/TUPLE_REF/TUPLE_LEN，opcode 表尾部追加）。
@@ -485,7 +485,11 @@ enum {
     LOP_MAKE_CLOSURE,
     LOP_GLOBAL,
     LOP_RESERVE,
-    LOP_BUILTIN,
+    /* retired OP_BUILTIN slot: kept so v4 opcode numbering (and every
+     * compiled image produced before this change) stays parseable. The
+     * interpreter rejects an encounter with a clear error instead of
+     * jumping through a NULL dispatch entry. */
+    LOP_RESERVED_28 = 28,
     /* 融合指令：x + PUSH 一条发完（实参传递形态，compile.ta fuse pass
      * 生成，两边同步加）。操作数与原指令一致，语义 = 原指令 + proc_push。 */
     LOP_LOADP,
@@ -757,11 +761,11 @@ typedef enum {
     OP_TAIL_CALL, /* nargs */
     OP_RET,
 
-    /* actor primitives — moved to OP_BUILTIN (see builtin_table below).
-     * The nine numbers they used are kept as reserved slots so no surviving
-     * opcode number moves.  Nothing emits them any more; if one ever reaches
-     * the dispatch loop it falls through to the unknown-opcode report, the
-     * same arm an out-of-range opcode takes. */
+    /* actor primitives — now host cfuncs. The nine numbers they used are
+     * kept as reserved slots so no surviving opcode number moves. Nothing
+     * emits them any more; if one ever reaches the dispatch loop it falls
+     * through to the unknown-opcode report, the same arm an out-of-range
+     * opcode takes. */
     OP_RESERVED_SPAWN,       /* 34, was OP_SPAWN */
     OP_RESERVED_SPAWN_MAIN,  /* 35, was OP_SPAWN_MAIN */
     OP_RESERVED_SPAWN_CLOS,  /* 36, was OP_SPAWN_CLOS */
@@ -769,13 +773,13 @@ typedef enum {
     OP_RESERVED_RECV,        /* 38, was OP_RECV */
     OP_RESERVED_RECV_PEEK,   /* 39, was OP_RECV_PEEK */
     OP_RESERVED_RECV_COMMIT, /* 40, was OP_RECV_COMMIT */
-    OP_SELF,                 /* 41 — the one actor primitive that stays an opcode */
+    OP_RESERVED_SELF,        /* 41, was OP_SELF */
     OP_RESERVED_MONITOR,     /* 42, was OP_MONITOR */
 
     /* built-in */
     OP_HALT,
 
-    /* Numbering is continuous from OP_ENTER to OP_BUILTIN. NOTE: this
+    /* Numbering is continuous from OP_ENTER to OP_IS_SYMBOL. NOTE: this
      * enum is legacy — nothing in the C code emits or dispatches it any
      * more: the interpreter runs the LOP_* enum below, the
      * instruction-length table is src/main.c's g_optlen[LOP_COUNT], and
@@ -794,9 +798,8 @@ typedef enum {
                                 compiler carries the literal as a decimal string
                                 (the bootstrap language has no floats) and the VM
                                 parses it with strtod at runtime */
-    OP_RESERVED_RECV_AFTER = 48, /* was OP_RECV_AFTER — now BUILTIN_RECV_AFTER */
-    OP_BUILTIN = 49,             /* legacy three-word form (opcode, idx, n) — cold-path
-                                  * actor primitive; now unused, see the NOTE above */
+    OP_RESERVED_RECV_AFTER = 48, /* was OP_RECV_AFTER — now a cfunc */
+    OP_RESERVED_BUILTIN = 49,    /* was the three-word builtin form; retired */
 
     /* New opcodes must append here (never renumber): the committed
      * lib/bootstrap.tabc seed embeds opcode numbers and must
@@ -808,53 +811,12 @@ typedef enum {
     OP_COUNT
 } OpCode;
 
-/* ============================================================
- * Actor primitives — builtin function-pointer table (src/builtin.c)
- *
- * The cold-path actor primitives (spawn / send / receive / monitor …) are
- * not their own opcodes any more: compile.ta emits the three-word
- * `OP_BUILTIN, id, n` instruction, and do_builtin in src/vm.c dispatches
- * on the id (LB_*), delegating to builtin_table[] where a shared
- * implementation is used.  They run on the
- * "cold path" — a builtin owns p->sp for the duration of the call
- * (the do_builtin handler in vm.c publishes sp before it and reloads it
- * after), so the hot-path loop-local stack pointer never has to be threaded
- * into them.  Every entry has the uniform signature
- *
- *     BStatus f(VM *vm, Proc *p)
- *
- * and reports whether the proc finished the instruction (B_OK) or blocked
- * and must re-run the whole builtin instruction once the scheduler wakes
- * it (B_SUSPEND). A blocked builtin returns B_SUSPEND *still holding
- * p->mbox_lock*, leaving p->state untouched: the do_builtin handler in vm.c
- * publishes the resume point (Proc 恢复态字段) and PROC_WAIT_RECV under that lock
- * before unlocking, so a waker can never observe the block state before the
- * resume point is final (see the handler comment in src/vm.c). The instructions that stay opcodes —
- * cons / car / cdr / the type tests / arithmetic / divzero — are cheaper than one indirect call,
- * which is the admission rule for this table.
- * ============================================================ */
-typedef enum {
-    B_OK,
-    B_SUSPEND,
-    B_DIED /* 检出收口违规（如 peek 消息带资源）：handler 只解锁+返回，
-            * 不碰栈；do_builtin 发布现场后 proc_die，run_proc 传播 R_DIED */
-} BStatus;
+/* Actor primitive cfuncs (src/builtin.c); called from ta_host_init. */
+void vm_register_actor_primitives(VM *vm);
 
-typedef BStatus (*BuiltinFn)(VM *vm, Proc *p);
+/* cfunc 挂起原因：do_ccall 在 C 函数返回后据此发布阻塞现场。 */
 
-/* Internal indices of builtin_table[] in src/builtin.c.  旧 ISA 的
- * spawn/send/recv 条目已随 lispvm 替换删除（do_builtin 的 LB_* switch 是
- * 唯一 id 空间）；剩下的四个是 vm.c do_builtin 借道复用实现的共享处理器，
- * 这里的序号只是表内布局，不是编译 id 空间。 */
-typedef enum {
-    BUILTIN_RECV_PEEK,   /* selective receive: peek next mbox msg or block */
-    BUILTIN_RECV_COMMIT, /* selective receive: consume matched msg, reset scan */
-    BUILTIN_RECV_AFTER,  /* wait for next msg up to a deadline; nil on timeout */
-    BUILTIN_MONITOR,
-    BUILTIN_COUNT
-} BuiltinId;
-
-extern const BuiltinFn builtin_table[BUILTIN_COUNT];
+typedef enum { TA_YIELD_NONE = 0, TA_YIELD_IO, TA_YIELD_RECV } TaCfuncYield;
 
 /* ============================================================
  * C API — lifecycle
@@ -912,6 +874,10 @@ const char *vm_fn_name(const VM *vm, int fid);
  * without polluting the value space or intruding into opcode logic. */
 void vm_watch_fd(VM *vm, int fd, short events);
 void vm_yield(VM *vm);
+/* Block on the mailbox. Call while holding tls_current_proc->mbox_lock;
+ * do_ccall publishes the resume point + PROC_WAIT_RECV under that lock and
+ * unlocks it, so mbox_deliver cannot miss the wakeup. */
+void vm_yield_recv(VM *vm);
 /* Wake the I/O poller so it re-scans deadlines/fds while blocked in poll()
  * (multi-thread mode only; a no-op in single-thread mode). */
 void vm_wait_register(VM *vm, Proc *p);
@@ -930,7 +896,7 @@ Proc *proc_new(VM *vm);
  * 并把首跑恢复点（pc/base/cbase）发布进 Proc 的恢复态字段 —— spawn 与 entry
  * 共用，run_proc 只剩恢复路径。fnval = 子 proc 的闭包（entry 传 nil）。 */
 void proc_frame_init(VM *vm, Proc *p, int fnid, Val fnval);
-/* spawn 的共用前半程（字节码 do_builtin 与原生 rt_b_spawn 同一份）：
+/* spawn 的共用前半程（字节码 cfunc 与原生 rt_b_spawn 同一份）：
  * 闭包值 → 入口 fnid、建子 proc、闭包整体深拷进子堆、移交资源归属。
  * 子未建帧、未入队 —— 帧形状归后端（vm->fn_entry / rt_resume），调用方铺帧
  * 后自己 enqueue。返回 0 时 out_* 有效；-1 = 收口违规（docs/c-resource-
@@ -941,9 +907,13 @@ void proc_die(VM *vm, Proc *p, Val reason);
 /* 投递收口（docs/c-resource-design.md §4）：返回 0 = 入队成功（含资源时
  * 归属已移交 target）；-1 = 消息带资源但校验不过（self-send / 非属主 /
  * 重复 payload / 无 proc 上下文），消息未入队、归属不动 —— 调用方把
- * 违规映射成进程隔离错误（LB_SEND），其余调用点消息无资源、不可达。 */
+ * 违规映射成进程隔离错误（cfunc_send），其余调用点消息无资源、不可达。 */
 int mbox_deliver(VM *vm, Proc *target, Val msg);
 Val mbox_pop(Proc *p);
+/* mbox_pop 的 cfunc 形态：调用方已在 do_ccall 的 chunk arena 里，不能
+ * proc_reserve_heap（它会收集，而 arena 里的 C 局部变量不是根）。深拷
+ * 直接落 chunk，由 do_ccall 收敛进堆。 */
+Val mbox_pop_cfunc(Proc *p);
 /* Message fragment serialization (timer.send_after snapshots the message
  * into malloc'd memory so it survives the caller's heap collections).
  * has_res（可为 NULL）回传「树里是否含资源」，投递路径据此跳过校验快路径。 */
