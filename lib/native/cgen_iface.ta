@@ -1,0 +1,49 @@
+// cgen_iface.ta — cgen 与编译器之间唯一的一层接触面。
+//
+// cgen.ta 不 import compile.ta：它只认这里的窄接口（名字判定、introduced 集、
+// free_vars、以及一份中性的 Bind 值）。把归档后端移植到另一版编译器时，改这一
+// 个文件即可，生成器主体不用跟着编译器的内部重构漂移。
+//
+// 这个实现对应归档时的编译器（actor 原语还是专用 builtin）；若宿主已把它们
+// 改成普通 cfunc（main 后续的版本），只需让 actor_prim 恒 false，并确保
+// lib_cfunc_head 认得这八个名字 —— cgen 会自动走 rt_ccall_at 而非 rt_actor_at。
+
+import "tinyactor:lib/bootstrap/ast" as ast
+import "tinyactor:lib/bootstrap/compile" as compile
+import "tinyactor:lib/list"
+
+pub type Bind {
+  Bind(name : Symbol, idx : Int)
+}
+
+pub fn op_name(name : Symbol) -> Bool { compile.op_name(name) }
+
+pub fn introduced(e : ast.Expr) -> List(Symbol) { compile.introduced(e) }
+
+pub fn lib_cfunc_head(name : Symbol) -> Bool { compile.lib_cfunc_head(name) }
+
+pub fn actor_prim(name : Symbol) -> Bool {
+  match name {
+    'self -> true
+    'spawn -> true
+    'send -> true
+    'recv -> true
+    'recv_after -> true
+    'recv_peek -> true
+    'recv_commit -> true
+    'monitor -> true
+    _ -> false
+  }
+}
+
+pub fn free_vars(e : ast.Expr, bound : List(Symbol), outer : List(Symbol), g : List(Bind)) -> List(Symbol) {
+  compile.free_vars(e, bound, outer, to_compile_binds(g))
+}
+
+fn to_compile_binds(g : List(Bind)) -> List(compile.Bind) {
+  list.map(fn(b) {
+    match b {
+      Bind(n, i) -> compile.Bind(n, i)
+    }
+  }, g)
+}

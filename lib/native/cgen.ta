@@ -1,5 +1,8 @@
 // cgen.ta — KL（lower 之后）→ C 源码。原生后端。
 //
+// 编译器耦合只经过 lib/native/cgen_iface.ta：本文件不 import compile.ta。
+// 移植到另一版编译器时换掉那一个窄接口文件即可。
+//
 // 契约在 lib/native/rt.h：每个 KL 函数（以及每处非尾调用之后的"剩余计算"）编成一个
 // C "stage"：
 //   Val f(Proc *p, Val a1, Val a2, Val a3, int base, long *budget)
@@ -32,7 +35,7 @@ import "tinyactor:lib/list"
 import "tinyactor:lib/buffer"
 import "tinyactor:lib/str"
 import "tinyactor:lib/bootstrap/ast" as ast
-import "tinyactor:lib/bootstrap/compile" as compile
+import "tinyactor:lib/native/cgen_iface" as iface
 import "tinyactor:lib/result"
 import "tinyactor:lib/option"
 
@@ -72,9 +75,9 @@ type FnR { FnR(fid : Int, ov : Int, fd : Int, label : String) }
 // 键，sym_to_str 原样取回）。用点在生成时才发现常量，所以表要边编边攒，
 // 由 assemble 在最后统一发 rt_init_globals 里的初始化行。
 type St {
-  St(buf, stages : List(Stage), fns : List(FnR), cfs : List(compile.Bind), cfsn : Int,
-  next_stage : Int, next_slot : Int, eb : List(EB), g : List(compile.Bind), fid : Int,
-  ksym : List(compile.Bind), kstr : List(compile.Bind), kn : Int)
+  St(buf, stages : List(Stage), fns : List(FnR), cfs : List(iface.Bind), cfsn : Int,
+  next_stage : Int, next_slot : Int, eb : List(EB), g : List(iface.Bind), fid : Int,
+  ksym : List(iface.Bind), kstr : List(iface.Bind), kn : Int)
 }
 
 type CF { CF(st : St, idx : Int) }
@@ -83,20 +86,20 @@ type CF { CF(st : St, idx : Int) }
 fn st_buf(st : St) { match st { St(b, _, _, _, _, _, _, _, _, _, _, _, _) -> b } }
 fn st_stages(st : St) -> List(Stage) { match st { St(_, s, _, _, _, _, _, _, _, _, _, _, _) -> s } }
 fn st_fns(st : St) -> List(FnR) { match st { St(_, _, f, _, _, _, _, _, _, _, _, _, _) -> f } }
-fn st_cfs(st : St) -> List(compile.Bind) { match st { St(_, _, _, c, _, _, _, _, _, _, _, _, _) -> c } }
+fn st_cfs(st : St) -> List(iface.Bind) { match st { St(_, _, _, c, _, _, _, _, _, _, _, _, _) -> c } }
 fn st_cfsn(st : St) -> Int { match st { St(_, _, _, _, c, _, _, _, _, _, _, _, _) -> c } }
 fn st_next_stage(st : St) -> Int { match st { St(_, _, _, _, _, n, _, _, _, _, _, _, _) -> n } }
 fn st_next_slot(st : St) -> Int { match st { St(_, _, _, _, _, _, n, _, _, _, _, _, _) -> n } }
 fn st_eb(st : St) -> List(EB) { match st { St(_, _, _, _, _, _, _, e, _, _, _, _, _) -> e } }
-fn st_g(st : St) -> List(compile.Bind) { match st { St(_, _, _, _, _, _, _, _, g, _, _, _, _) -> g } }
+fn st_g(st : St) -> List(iface.Bind) { match st { St(_, _, _, _, _, _, _, _, g, _, _, _, _) -> g } }
 fn st_fid(st : St) -> Int { match st { St(_, _, _, _, _, _, _, _, _, f, _, _, _) -> f } }
-fn st_ksym(st : St) -> List(compile.Bind) { match st { St(_, _, _, _, _, _, _, _, _, _, k, _, _) -> k } }
-fn st_kstr(st : St) -> List(compile.Bind) { match st { St(_, _, _, _, _, _, _, _, _, _, _, k, _) -> k } }
+fn st_ksym(st : St) -> List(iface.Bind) { match st { St(_, _, _, _, _, _, _, _, _, _, k, _, _) -> k } }
+fn st_kstr(st : St) -> List(iface.Bind) { match st { St(_, _, _, _, _, _, _, _, _, _, _, k, _) -> k } }
 fn st_kn(st : St) -> Int { match st { St(_, _, _, _, _, _, _, _, _, _, _, _, n) -> n } }
 fn oc_cfn(o : OC) -> String { match o { OC(c, _) -> c } }
 fn oc_nargs(o : OC) -> Int { match o { OC(_, n) -> n } }
 
-type GT { GT(g : List(compile.Bind), n : Int) }
+type GT { GT(g : List(iface.Bind), n : Int) }
 
 // =====================================================================
 // 小工具
@@ -126,12 +129,12 @@ fn eb_at(name : Symbol, eb : List(EB)) -> EB {
   }
 }
 
-fn bind_find(name : Symbol, alist : List(compile.Bind)) -> Int {
+fn bind_find(name : Symbol, alist : List(iface.Bind)) -> Int {
   if null?(alist) {
     -1
   } else {
     match car(alist) {
-      compile.Bind(n, v) -> if n == name { v } else { bind_find(name, cdr(alist)) }
+      iface.Bind(n, v) -> if n == name { v } else { bind_find(name, cdr(alist)) }
     }
   }
 }
@@ -276,7 +279,7 @@ fn const_plain(c : ast.Const) -> String {
 // 实测占 C 腿 ~9%），字符串更是每次执行 malloc 一份且 GC 收不到（泄漏）。
 type KR { KR(st : St, e : String) }
 
-fn with_kons(st : St, b : compile.Bind, is_str : Bool) -> St {
+fn with_kons(st : St, b : iface.Bind, is_str : Bool) -> St {
   if is_str {
     St(st_buf(st), st_stages(st), st_fns(st), st_cfs(st), st_cfsn(st), st_next_stage(st),
     st_next_slot(st), st_eb(st), st_g(st), st_fid(st), st_ksym(st), cons(b, st_kstr(st)), st_kn(st) + 1)
@@ -286,12 +289,12 @@ fn with_kons(st : St, b : compile.Bind, is_str : Bool) -> St {
   }
 }
 
-fn kon_find(key : Symbol, alist : List(compile.Bind)) -> Int {
+fn kon_find(key : Symbol, alist : List(iface.Bind)) -> Int {
   if null?(alist) {
     -1
   } else {
     match car(alist) {
-      compile.Bind(k, i) -> if k == key { i } else { kon_find(key, cdr(alist)) }
+      iface.Bind(k, i) -> if k == key { i } else { kon_find(key, cdr(alist)) }
     }
   }
 }
@@ -309,7 +312,7 @@ fn const_cg(st : St, c : ast.Const) -> KR {
 fn kons_hit(st : St, key : Symbol, hit : Int, is_str : Bool) -> KR {
   if hit < 0 {
     let i = st_kn(st)
-    KR(with_kons(st, compile.Bind(key, i), is_str), j(["rt_k[", i2s(i), "]"]))
+    KR(with_kons(st, iface.Bind(key, i), is_str), j(["rt_k[", i2s(i), "]"]))
   } else {
     KR(st, j(["rt_k[", i2s(hit), "]"]))
   }
@@ -368,21 +371,9 @@ fn is_cons(name : Symbol) -> Bool { name == 'cons }
 // tuple 是 n 元构造子（任意实参个数，含 0），不是固定 arity 的算符。
 fn is_tuple(name : Symbol) -> Bool { name == 'tuple }
 
-// actor 原语（M2 才接）：C 后端没有对应 cfunc，必须编译期拒掉，而不是让名字
-// 落到"未知可调用"的模糊错误上。
-fn actor_prim(name : Symbol) -> Bool {
-  match name {
-    'self -> true
-    'spawn -> true
-    'send -> true
-    'recv -> true
-    'recv_after -> true
-    'recv_peek -> true
-    'recv_commit -> true
-    'monitor -> true
-    _ -> false
-  }
-}
+// actor 原语是否走专用 rt_actor_at（由 iface 决定）；宿主把它们改成普通
+// cfunc 后 iface 返回 false，这里就自然落到 gen_ccall。
+fn actor_prim(name : Symbol) -> Bool { iface.actor_prim(name) }
 
 // =====================================================================
 // 校验：M1 的每条限制都在这里拦（前端不管这些）
@@ -396,7 +387,7 @@ fn undef_msg(where : String, name : Symbol) -> String {
   j([where, ": ", str.sym_to_str(name)])
 }
 
-fn v_expr(e : ast.Expr, bound : List(Symbol), outer : List(Symbol), g : List(compile.Bind)) -> option.Option(String) {
+fn v_expr(e : ast.Expr, bound : List(Symbol), outer : List(Symbol), g : List(iface.Bind)) -> option.Option(String) {
   match e {
     ast.EConst(_) -> option.None
     ast.ESym(name) ->
@@ -409,7 +400,7 @@ fn v_expr(e : ast.Expr, bound : List(Symbol), outer : List(Symbol), g : List(com
         if actor_prim(name) {
           option.Some(undef_msg("actor primitive as a value is not supported by the C backend", name))
         } else {
-          if compile.op_name(name) {
+          if iface.op_name(name) {
             option.Some(undef_msg("operator used as a value is not supported by the C backend", name))
           } else {
             // C 函数作值与 VM 同一条路：TAG_NATIVE + cfunc 下标，见 genv。
@@ -426,7 +417,7 @@ fn v_expr(e : ast.Expr, bound : List(Symbol), outer : List(Symbol), g : List(com
     ast.EIf(cond, yes, no) -> match v_expr(cond, bound, outer, g) {
       option.Some(m) -> option.Some(m)
       option.None -> {
-        let b1 = list.append(compile.introduced(cond), bound)
+        let b1 = list.append(iface.introduced(cond), bound)
         match v_expr(yes, b1, outer, g) {
           option.Some(m) -> option.Some(m)
           option.None -> v_expr(no, b1, outer, g)
@@ -438,18 +429,18 @@ fn v_expr(e : ast.Expr, bound : List(Symbol), outer : List(Symbol), g : List(com
   }
 }
 
-fn v_seq(forms : List(ast.Expr), bound : List(Symbol), outer : List(Symbol), g : List(compile.Bind)) -> option.Option(String) {
+fn v_seq(forms : List(ast.Expr), bound : List(Symbol), outer : List(Symbol), g : List(iface.Bind)) -> option.Option(String) {
   if null?(forms) {
     option.None
   } else {
     match v_expr(car(forms), bound, outer, g) {
       option.Some(m) -> option.Some(m)
-      option.None -> v_seq(cdr(forms), list.append(compile.introduced(car(forms)), bound), outer, g)
+      option.None -> v_seq(cdr(forms), list.append(iface.introduced(car(forms)), bound), outer, g)
     }
   }
 }
 
-fn v_args(args : List(ast.Expr), bound : List(Symbol), outer : List(Symbol), g : List(compile.Bind)) -> option.Option(String) {
+fn v_args(args : List(ast.Expr), bound : List(Symbol), outer : List(Symbol), g : List(iface.Bind)) -> option.Option(String) {
   if null?(args) {
     option.None
   } else {
@@ -460,8 +451,8 @@ fn v_args(args : List(ast.Expr), bound : List(Symbol), outer : List(Symbol), g :
   }
 }
 
-fn v_call(callee : ast.Expr, args : List(ast.Expr), bound : List(Symbol), outer : List(Symbol), g : List(compile.Bind)) -> option.Option(String) {
-  let b1 = list.append(compile.introduced(callee), bound)
+fn v_call(callee : ast.Expr, args : List(ast.Expr), bound : List(Symbol), outer : List(Symbol), g : List(iface.Bind)) -> option.Option(String) {
+  let b1 = list.append(iface.introduced(callee), bound)
   match callee {
     ast.ESym(name) ->
     if is_local(name, bound, outer) {
@@ -477,7 +468,7 @@ fn v_call(callee : ast.Expr, args : List(ast.Expr), bound : List(Symbol), outer 
             option.Some(undef_msg("actor primitive arity mismatch", name))
           }
         } else {
-          if compile.lib_cfunc_head(name) {
+          if iface.lib_cfunc_head(name) {
             v_args(args, b1, outer, g)
           } else {
             match op_c(name) {
@@ -506,7 +497,7 @@ fn v_call(callee : ast.Expr, args : List(ast.Expr), bound : List(Symbol), outer 
 // define 的作用域刻意收窄成"只看全局"：C 后端里每个 define 是独立 stage，
 // 拿不到 entry 帧的局部（字节码后端能，因为 GLOBAL 在同一条栈上）。拦在编译期，
 // 不做静默劣化。
-fn v_tops(forms : List(ast.Top), bound : List(Symbol), g : List(compile.Bind)) -> option.Option(String) {
+fn v_tops(forms : List(ast.Top), bound : List(Symbol), g : List(iface.Bind)) -> option.Option(String) {
   if null?(forms) {
     option.None
   } else {
@@ -520,7 +511,7 @@ fn v_tops(forms : List(ast.Top), bound : List(Symbol), g : List(compile.Bind)) -
       }
       ast.TExpr(e) -> match v_expr(e, bound, nil, g) {
         option.Some(m) -> option.Some(m)
-        option.None -> v_tops(cdr(forms), list.append(compile.introduced(e), bound), g)
+        option.None -> v_tops(cdr(forms), list.append(iface.introduced(e), bound), g)
       }
     }
   }
@@ -530,7 +521,7 @@ fn v_tops(forms : List(ast.Top), bound : List(Symbol), g : List(compile.Bind)) -
 // 全局表：define 名 → stage id（0 是 halt，1..k 是 define，k+1 是 entry）
 // =====================================================================
 
-fn collect_defs(forms : List(ast.Top), next : Int, acc : List(compile.Bind)) -> GT {
+fn collect_defs(forms : List(ast.Top), next : Int, acc : List(iface.Bind)) -> GT {
   if null?(forms) {
     GT(acc, next)
   } else {
@@ -539,7 +530,7 @@ fn collect_defs(forms : List(ast.Top), next : Int, acc : List(compile.Bind)) -> 
       if bind_find(name, acc) >= 0 {
         collect_defs(cdr(forms), next, acc)
       } else {
-        collect_defs(cdr(forms), next + 1, cons(compile.Bind(name, next), acc))
+        collect_defs(cdr(forms), next + 1, cons(iface.Bind(name, next), acc))
       }
       _ -> collect_defs(cdr(forms), next, acc)
     }
@@ -887,7 +878,7 @@ fn cfunc_idx(name : Symbol, st : St) -> CF {
     CF(st, hit)
   } else {
     let idx = st_cfsn(st)
-    CF(St(st_buf(st), st_stages(st), st_fns(st), cons(compile.Bind(name, idx), st_cfs(st)), idx + 1, st_next_stage(st),
+    CF(St(st_buf(st), st_stages(st), st_fns(st), cons(iface.Bind(name, idx), st_cfs(st)), idx + 1, st_next_stage(st),
     st_next_slot(st), st_eb(st), st_g(st), st_fid(st), st_ksym(st), st_kstr(st), st_kn(st)), idx)
   }
 }
@@ -1106,7 +1097,7 @@ fn gen_if(cond : ast.Expr, yes : ast.Expr, no : ast.Expr, st : St, k) {
 }
 
 fn gen_closure(params : List(Symbol), body : ast.Expr, st : St, k) {
-  let fvs = compile.free_vars(body, params, eb_names(st_eb(st)), st_g(st))
+  let fvs = iface.free_vars(body, params, eb_names(st_eb(st)), st_g(st))
   let nfree = list.length(fvs)
   let sid = st_next_stage(st)
   let parent_buf = st_buf(st)
@@ -1226,7 +1217,7 @@ fn genv(e : ast.Expr, st : St, k) {
     ast.EConst(c) -> match const_cg(st, c) { KR(s2, x) -> k(s2, x) }
     ast.ESym(name) -> match sym_c(name, st) {
       option.Some(x) -> k(st, x)
-      option.None -> if compile.lib_cfunc_head(name) {
+      option.None -> if iface.lib_cfunc_head(name) {
         // C 函数作值：与 vm.c 的 op_global 同款 —— 立即值，零堆分配。
         match cfunc_idx(name, st) { CF(s2, cf) -> k(s2, j(["rt_native_val(g_cf", i2s(cf), ")"])) }
       } else {
@@ -1307,7 +1298,7 @@ fn gen_call_dyn(tail : Bool, name : Symbol, args : List(ast.Expr), st : St, k) {
       if actor_prim(name) {
         gen_builtin(name, args, st, k)
       } else {
-        if compile.lib_cfunc_head(name) {
+        if iface.lib_cfunc_head(name) {
           gen_ccall(name, args, st, k)
         } else {
           k(st, "val_nil()") // 校验已拦
@@ -1533,47 +1524,47 @@ fn emit_resume(id : Int, last : Int, st : St, out : St) -> St {
   }
 }
 
-fn emit_cfs(cfs : List(compile.Bind), st : St) -> St {
+fn emit_cfs(cfs : List(iface.Bind), st : St) -> St {
   if null?(cfs) {
     st
   } else {
     match car(cfs) {
       // 必须递归：只发 head 的话除最后一个 cfunc 外全都停在 0（未初始化），
       // 所有 rt_ccall_at 都落到 0 号 cfunc 上。emit_cf_decls 是对的，照它写。
-      compile.Bind(name, idx) ->
+      iface.Bind(name, idx) ->
       emit_cfs(cdr(cfs), line(st, j(["    g_cf", i2s(idx), " = rt_cfunc(vm, ", c_lit(str.sym_to_str(name)), ");"])))
     }
   }
 }
 
-fn emit_cf_decls(cfs : List(compile.Bind), st : St) -> St {
+fn emit_cf_decls(cfs : List(iface.Bind), st : St) -> St {
   if null?(cfs) {
     st
   } else {
     match car(cfs) {
-      compile.Bind(_, idx) -> emit_cf_decls(cdr(cfs), line(st, j(["static int g_cf", i2s(idx), ";"])))
+      iface.Bind(_, idx) -> emit_cf_decls(cdr(cfs), line(st, j(["static int g_cf", i2s(idx), ";"])))
     }
   }
 }
 
 // rt_init_globals 里的常量池初始化：持 vm 解析一次，之后用点只是数组读。
-fn emit_kons(ks : List(compile.Bind), st : St) -> St {
+fn emit_kons(ks : List(iface.Bind), st : St) -> St {
   if null?(ks) {
     st
   } else {
     match car(ks) {
-      compile.Bind(name, i) -> emit_kons(cdr(ks),
+      iface.Bind(name, i) -> emit_kons(cdr(ks),
       line(st, j(["    rt_k[", i2s(i), "] = rt_const_symbol(vm, ", c_lit(str.sym_to_str(name)), ");"])))
     }
   }
 }
 
-fn emit_kstrs(ks : List(compile.Bind), st : St) -> St {
+fn emit_kstrs(ks : List(iface.Bind), st : St) -> St {
   if null?(ks) {
     st
   } else {
     match car(ks) {
-      compile.Bind(sym, i) -> {
+      iface.Bind(sym, i) -> {
         let lit = c_lit(str.sym_to_str(sym))
         emit_kstrs(cdr(ks),
         line(st, j(["    rt_k[", i2s(i), "] = rt_const_string(vm, ", lit, ", (int)strlen(", lit, "));"])))
