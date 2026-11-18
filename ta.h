@@ -359,7 +359,7 @@ typedef struct Proc {
      * 某个 worker 在 run_proc 里跑一个 proc 时它那段 C 栈现场仍会被写
      * （ccall 的收尾写槽、arena 收敛、GC 重开）。此时别的线程**不能**把它
      * 入队 —— 两个 worker 同跑一个 proc，后到者在 proc_die 之后写 p->mem
-     * 就是野指针写（cgen 腿实测崩在 RT_SLOT(p, at_slot) = r）。
+     * 就是野指针写（运行所有权见 Proc.owner）。
      *
      * owner 是个三态原子，唤醒与持有者的握手全在它上面完成（细节见
      * scheduler.c 的 vm_wake_proc 与 worker_loop 认领处）：

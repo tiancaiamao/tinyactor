@@ -306,7 +306,6 @@ Per-process semispace copying GC：
 ├── lib/               TA 标准库（*.ta）+ C 模块（*.c/*.dylib）
 │   ├── bootstrap/     编译器源码（tokenizer/parser/typecheck/
 │   │                  lower-ast/compile/kl/bytecode/fmt/driver…）
-│   ├── native/        原生后端（cgen.ta 发射 C，rt.c/rt.h 运行时宿主）
 │   ├── *.c            C 模块：net/timer/file/str/math/os/time/random/
 │   │                  encoding/sexp/sha256/cov/buffer/process/tls
 │   └── bootstrap.tabc 种子编译器（已验证固定点）
@@ -316,11 +315,11 @@ Per-process semispace copying GC：
 │   └── run_*_tests.sh 11 个测试套件 + 类别子目录（basic/gc/actor/…）
 ├── example/
 │   └── scripts/       echo 服务器 / HTTP 服务器 / 并发测试
-├── ta.h/ta_inline.h  公共头文件（另 host.h / rt.h 属各自宿主）
+├── ta.h/ta_inline.h  公共头文件
 └── README.md          快速上手与 FAQ
 ```
 
-**总代码量：~5,750 行 C 运行时（`src/*.c`）+ ~4,500 行 C 模块（`lib/*.c`）+ ~22,000 行 TA（`lib/**/*.ta`，含 `lib/native/cgen.ta`）+ ~2,400 行头文件**（`wc` 当场重数；头文件里 `ta.h`/`ta_inline.h` 公共，`host.h`/`rt.h` 各属其宿主）
+**总代码量：~5,750 行 C 运行时（`src/*.c`）+ ~4,500 行 C 模块（`lib/*.c`）+ ~22,000 行 TA（`lib/**/*.ta`）+ ~2,400 行头文件**（`wc` 当场重数）
 
 ## 7. 验收场景（已全部验证通过）
 

@@ -390,17 +390,16 @@ expand_imports 只重写已 import 模块，属已知边界，见 git log
 ## 多 worker 调度：运行所有权（owner）
 
 协作式调度里「一个 proc 同一时刻只被一个 worker 跑」不自动成立。反例
-（2026-11 实测，cgen 腿 HTTP 服务 `NW=2` 必崩，`Assertion failed: p->gc_gate > 0`
+（2026-11 实测，HTTP 服务 `NW=2` 必崩，`Assertion failed: p->gc_gate > 0`
 / 野指针写）：
 
 `mbox_deliver` 把目标置 `PROC_RUNNING` 并入队之后，目标 proc 的 worker 还没从
 `rt_ccall_at` 的 C 栈返回 —— `p->ccall` 挂着 arena、`RT_SLOT(p, at_slot)` 尚未
 写回；poller 立刻判定 fd 就绪 → 又一条队列记录 → worker B 领走 → A 返回时
 `RT_BLOCKED(p)` 因 state 已被改回 `RUNNING` 而为假 → A 继续写槽，而 B 已经
-`proc_die` free 掉 `p->mem`。cgen 腿比 VM 腿更容易中，是因为 cgen 的
-`run_proc` 用 `if (st != PROC_RUNNING) return R_BLOCKED; return R_YIELD` 靠
-state 反推「是挂起还是预算耗尽」，state 被 poller 改掉后它把「挂起」误判成
-「预算耗尽」再入队，直接双跑；VM 的 `do_ccall` 用显式 `return 1`。
+`proc_die` free 掉 `p->mem`。这类竞态的本质是「state 不区分挂起与预算让出」：
+靠 state 反推返回原因的执行路径会把挂起误判成让出，再入队，直接双跑；
+`do_ccall` 用显式 `return 1` 区分。
 
 只把 `WAIT_IO → RUNNING` 的转换与入队包进 `wait_lock` **无效**：要防的是 A 那段
 **C 栈还没收尾**，它不在任何锁里。所以引入 `Proc.owner`（三态原子，见 `ta.h`）：

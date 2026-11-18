@@ -190,13 +190,9 @@ B_RECV_COMMIT / B_MONITOR`（`spawn_main` / `spawn_clos` 随 lispvm 替换一并
 分派分两层：
 
 - **纯处理器**：`recv_peek / recv_commit / recv_after / monitor` 这 4 个会阻塞的，
-  落在 `builtin_table[]`（`src/builtin.c`，按 `BUILTIN_*` 索引）——字节码后端与
-  原生后端共用同一份实现，`do_builtin` 与 `lib/native/rt.c` 的 `rt_call_handler`
-  都借道它；
-- **后端原生**：`self / spawn / send / recv` 各自实现（字节码 `src/vm.c`，原生
-  `lib/native/rt.c`）——调用约定不同（acc/栈 vs 槽位），共用不划算。spawn 里
-  「建子 proc + 闭包整体深拷 + 资源归属移交」这段两后端确实一样，已收敛成
-  `proc_spawn_begin`（`src/scheduler.c`，#475）。
+  落在 `builtin_table[]`（`src/builtin.c`，按 `BUILTIN_*` 索引），`do_builtin`
+  借道它；
+- **VM 原生**：`self / spawn / send / recv` 各自实现（`src/vm.c`）。
 
 指令编码：
 
