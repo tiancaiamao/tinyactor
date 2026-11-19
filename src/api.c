@@ -292,15 +292,9 @@ void vm_free(VM *vm) {
         Proc *p = vm->procs[i];
         if (!p)
             continue;
-        /* free any undelivered message fragments —— 消息里的资源归属是这个
-         * （被 teardown 而非正常死亡的）proc，先兑底释放（§6.3） */
-        MsgFragment *frag = p->mbox_frag_head;
-        while (frag) {
-            MsgFragment *nx = frag->next;
-            resource_release_tree(frag->root, p->pid);
-            free(frag);
-            frag = nx;
-        }
+        /* 消息里的资源归属是这个（被 teardown 而非正常死亡的）proc，
+         * 连同未投递的消息一起还掉（§6.3） */
+        mbox_drain(p);
         pthread_mutex_destroy(&p->mbox_lock);
         /* 活堆兑底（§6.3）：同 proc_die，全堆都是垃圾 */
         if (p->mem)
@@ -692,25 +686,32 @@ static Val vm_make_tok_vec_fn(VM *vm, Proc *p, Val *args, int nargs) {
     return ta_resource_new(p, vec, tokvec_dtor);
 }
 
-static Val vm_tok_type_fn(VM *vm, Proc *p, Val *args, int nargs) {
+/* tok_type / tok_val / tok_at 共同的前奏：开句柄、取 TokVec、取下标。
+ * 打不开（错型 / 已随投递移交 / 已释放）或越界都返回 NULL，兜底值各自由
+ * 调用方给（'eof / nil / 0）。 */
+static TokVec *tok_lookup(Proc *p, Val *args, int *pos) {
     HeapResource *r;
     if (ta_resource_open(args[0], p, &r, -1) != 0)
-        return val_nil(); /* 错型 / 已随投递移交 / 已释放 */
+        return NULL;
     TokVec *vec = r->res->ptr;
-    int pos = (int)val_get_int(args[1]);
-    if (pos < 0 || pos >= vec->len) {
+    *pos = (int)val_get_int(args[1]);
+    if (*pos < 0 || *pos >= vec->len)
+        return NULL;
+    return vec;
+}
+
+static Val vm_tok_type_fn(VM *vm, Proc *p, Val *args, int nargs) {
+    int pos;
+    TokVec *vec = tok_lookup(p, args, &pos);
+    if (!vec)
         return val_symbol((uint32_t)vm_intern_symbol(vm, "eof"));
-    }
     return val_symbol((uint32_t)vec->entries[pos].type_idx);
 }
 
 static Val vm_tok_val_fn(VM *vm, Proc *p, Val *args, int nargs) {
-    HeapResource *r;
-    if (ta_resource_open(args[0], p, &r, -1) != 0)
-        return val_nil();
-    TokVec *vec = r->res->ptr;
-    int pos = (int)val_get_int(args[1]);
-    if (pos < 0 || pos >= vec->len)
+    int pos;
+    TokVec *vec = tok_lookup(p, args, &pos);
+    if (!vec)
         return val_nil();
     TokEntry *e = &vec->entries[pos];
     switch (e->val_type) {
@@ -724,13 +725,10 @@ static Val vm_tok_val_fn(VM *vm, Proc *p, Val *args, int nargs) {
 }
 
 static Val vm_tok_at_fn(VM *vm, Proc *p, Val *args, int nargs) {
-    HeapResource *r;
-    if (ta_resource_open(args[0], p, &r, -1) != 0)
-        return val_int(0);
-    TokVec *vec = r->res->ptr;
-    int pos = (int)val_get_int(args[1]);
-    if (pos < 0 || pos >= vec->len)
-        return val_int(0); /* out of range: 0 == "start of file" */
+    int pos;
+    TokVec *vec = tok_lookup(p, args, &pos);
+    if (!vec)
+        return val_int(0); /* 打不开 / 越界：0 == "start of file" */
     return val_int(vec->entries[pos].at);
 }
 

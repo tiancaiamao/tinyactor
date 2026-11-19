@@ -233,16 +233,45 @@ int mbox_deliver(VM *vm, Proc *sender, Proc *target, Val msg) {
     return 0;
 }
 
-/* Detach the head fragment and rebuild its tree on p's own heap.
- * Caller guarantees p owns its execution context (no heap races). */
-Val mbox_pop(Proc *p) {
-    pthread_mutex_lock(&p->mbox_lock);
+/* 摘下邮箱头的 fragment（*调用方须已持 mbox_lock*）。三处摘头（pop /
+ * pop_cfunc / recv_commit）共用这一份指针手术：漏改 tail 或漏减 count
+ * 就是邮箱错乱，这种手术不该有第二份。 */
+MsgFragment *mbox_detach_head_locked(Proc *p) {
     MsgFragment *frag = p->mbox_frag_head;
     p->mbox_frag_head = frag->next;
     if (!p->mbox_frag_head)
         p->mbox_frag_tail = NULL;
     p->mbox_count--;
+    return frag;
+}
+
+static MsgFragment *mbox_detach_head(Proc *p) {
+    pthread_mutex_lock(&p->mbox_lock);
+    MsgFragment *frag = mbox_detach_head_locked(p);
     pthread_mutex_unlock(&p->mbox_lock);
+    return frag;
+}
+
+/* 丢弃邮箱里未投递的 fragment，先兑底释放其中的资源（§6.3）—— 归属是
+ * 死者/被 teardown 者，没人再会 close 它们。proc_die 与 vm_free 共用。 */
+void mbox_drain(Proc *p) {
+    pthread_mutex_lock(&p->mbox_lock);
+    MsgFragment *frag = p->mbox_frag_head;
+    while (frag) {
+        MsgFragment *next = frag->next;
+        resource_release_tree(frag->root, p->pid);
+        free(frag);
+        frag = next;
+    }
+    p->mbox_frag_head = p->mbox_frag_tail = NULL;
+    p->mbox_count = 0;
+    pthread_mutex_unlock(&p->mbox_lock);
+}
+
+/* Detach the head fragment and rebuild its tree on p's own heap.
+ * Caller guarantees p owns its execution context (no heap races). */
+Val mbox_pop(Proc *p) {
+    MsgFragment *frag = mbox_detach_head(p);
 
     /* The message may exceed the arena's free space, and the gate-closed
      * deep copy below cannot grow the arena — reserve first (gate is open
@@ -257,14 +286,7 @@ Val mbox_pop(Proc *p) {
  * owns the copy, so no reserve/collection may run here. do_ccall promotes
  * the returned Val into the heap when the callback returns. */
 Val mbox_pop_cfunc(Proc *p) {
-    pthread_mutex_lock(&p->mbox_lock);
-    MsgFragment *frag = p->mbox_frag_head;
-    p->mbox_frag_head = frag->next;
-    if (!p->mbox_frag_head)
-        p->mbox_frag_tail = NULL;
-    p->mbox_count--;
-    pthread_mutex_unlock(&p->mbox_lock);
-
+    MsgFragment *frag = mbox_detach_head(p);
     Val v = val_deep_copy(p, p, frag->root, NULL);
     free(frag);
     return v;
@@ -575,19 +597,8 @@ void proc_die(VM *vm, Proc *p, Val reason) {
     proc_gc_leave(p);
     pthread_mutex_unlock(&vm->procs_lock);
 
-    /* Free all undelivered mailbox fragments；其中的资源归属是死者 →
-     * 先兑底释放（§6.3），与并发发送方由同一把 mbox_lock 串行。 */
-    pthread_mutex_lock(&p->mbox_lock);
-    MsgFragment *frag = p->mbox_frag_head;
-    while (frag) {
-        MsgFragment *next = frag->next;
-        resource_release_tree(frag->root, p->pid);
-        free(frag);
-        frag = next;
-    }
-    p->mbox_frag_head = p->mbox_frag_tail = NULL;
-    p->mbox_count = 0;
-    pthread_mutex_unlock(&p->mbox_lock);
+    /* 未投递的消息连同其中的资源一起还掉（与并发发送方由 mbox_lock 串行） */
+    mbox_drain(p);
 
     /* Release heap memory now that DOWN messages have been sent.
      * watchers/watcher_refs are NOT freed here — another thread may be
@@ -624,7 +635,7 @@ void proc_die(VM *vm, Proc *p, Val reason) {
 /* Register a published wait. Proc storage is retained until vm_free, so
  * poll snapshots can safely hold Proc pointers while a concurrent wake
  * removes the registration. */
-static void wait_register(VM *vm, Proc *p) {
+void vm_wait_register(VM *vm, Proc *p) {
     int needs_wakeup;
     pthread_mutex_lock(&vm->wait_lock);
     if (!p->wait_registered) {
@@ -665,8 +676,6 @@ static void drain_wake_pipe(VM *vm) {
     while (read(vm->wake_pipe_r, buf, sizeof buf) > 0) {
     }
 }
-
-void vm_wait_register(VM *vm, Proc *p) { wait_register(vm, p); }
 
 int vm_wait_count(VM *vm) { return atomic_load(&vm->wait_count); }
 
