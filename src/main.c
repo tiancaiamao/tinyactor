@@ -572,24 +572,21 @@ static void host_nworkers(VM *vm) {
  * build-wasm.sh 把这些静态链接进 VM，在这里显式注册。表里的符号由那一遍编译的
  *   -Dvm_load_self=ta_wasm_<mod>_load_self
  * 改名造出（每个 lib/<mod>.c 都导出同名入口，静态链接会撞车）。加模块 =
- * 这里加一行 + build-wasm.sh 的 WASM_C_MODULES 加一个目录名，两处名字必须
- * 一致（漏改是链接期 undefined symbol，不是静默失效）。原生构建走不到这里，
+ * 下面 TA_WASM_MODULES 加一个名字 + build-wasm.sh 的 WASM_C_MODULES 加一个
+ * 目录名，两处名字必须一致（漏改是链接期 undefined symbol，不是静默失效）。
+ * 原型与调用由同一张表生成：名字只写一遍，不会漂。原生构建走不到这里，
  * 模块照样按需 dlopen。 */
 #ifdef __EMSCRIPTEN__
-void ta_wasm_str_load_self(VM *vm);
-void ta_wasm_buffer_load_self(VM *vm);
-void ta_wasm_file_load_self(VM *vm);
-void ta_wasm_os_load_self(VM *vm);
-void ta_wasm_int_load_self(VM *vm);
-void ta_wasm_float_load_self(VM *vm);
+#define TA_WASM_MODULES(X) X(str) X(buffer) X(file) X(os) X(int) X(float)
+
+#define TA_WASM_DECL(m) void ta_wasm_##m##_load_self(VM *vm);
+TA_WASM_MODULES(TA_WASM_DECL)
+#undef TA_WASM_DECL
 
 static void host_wasm_static_modules(VM *vm) {
-    ta_wasm_str_load_self(vm);
-    ta_wasm_buffer_load_self(vm);
-    ta_wasm_file_load_self(vm);
-    ta_wasm_os_load_self(vm);
-    ta_wasm_int_load_self(vm);
-    ta_wasm_float_load_self(vm);
+#define TA_WASM_CALL(m) ta_wasm_##m##_load_self(vm);
+    TA_WASM_MODULES(TA_WASM_CALL)
+#undef TA_WASM_CALL
 }
 #endif
 
