@@ -375,7 +375,7 @@ copy_done:
 
 /* 值树的总字节数，每个对象 8 字节对齐。两种调用方只差一个数：
  *
-  *   min_object — 最小对象下限。GC 堆要给转发指针留槽（ta_heap_object_size），
+ *   min_object — 最小对象下限。GC 堆要给转发指针留槽（ta_heap_object_size），
  *                所以裸尺寸很小的对象（空 tuple / 空 bytes 都是 8 字节）也占
  *                TA_HEAP_MIN_OBJECT（16）。消息分片不是 GC 堆、不需要那个槽，
  *                两个分片调用方（scheduler.c 投递 / lib/timer.c 快照）传 0。
