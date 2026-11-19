@@ -445,7 +445,7 @@ void vm_register_module(VM *vm, const char *name, TaFunc *funcs, int nfuncs) {
     }
 }
 
-/* 冻结前缀（host_init 静态注册的纯 C 模块，如 num/vm）里有这个模块吗。
+/* 冻结前缀（main.c host_vm_init 静态注册的纯 C 模块，即 vm）里有这个模块吗。
  * mod 是 "<mod>.<fn>" 里的模块部分，可能不带 NUL 结尾。
  *
  * 判据必须只看**冻结前缀**，不能看整个注册表：懒加载 dylib（str/file/os/
@@ -489,7 +489,7 @@ void vm_seal_host_modules(VM *vm) { vm->host_mod_count = vm->mod_count; }
  * unknown-call) and — at link time — through find_cfunc_autoload.
  *
  * 两个答案来源：
- *   - 注册表冻结前缀（num/vm）：host_init 静态注册的纯 C 模块，
+ *   - 注册表冻结前缀（vm）：host_vm_init 静态注册的纯 C 模块，
  *     无 lib/<name>.ta 可装载。
  *   - "net"/"timer" 硬编码：已下沉为 lazy dylib（lib/net.dylib /
  *     lib/timer.dylib），原语保留原全名（tcp.ta 的 external_fn 签名与

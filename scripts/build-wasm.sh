@@ -130,11 +130,13 @@ for f in "$REPO_ROOT"/src/*.c; do
 done
 
 # C modules the compiler itself calls (str: 读源码拼字符串；file: 读模块源；
-# os: 出错退出)。原生构建里它们是 lazy dylib（首次引用时 dlopen），wasm 没有
+# os: 出错退出)，外加语言层的 int / float 转换（数值塔是用户程序随时会调的
+# 词表）。原生构建里它们是 lazy dylib（首次引用时 dlopen），wasm 没有
 # dlopen，所以静态链进来。每个 lib/<mod>.c 都导出同名 vm_load_self，静态
 # 链接会撞车——这一遍编译用 -Dvm_load_self=ta_wasm_<mod>_load_self 改名，
-# 注册表在 src/host-wasm.c（两边名字必须一致，漏改 = 链接期 undefined）。
-WASM_C_MODULES=(str buffer file os)
+# 注册表在 src/main.c 的 host_wasm_static_modules（两边名字必须一致，
+# 漏改 = 链接期 undefined）。
+WASM_C_MODULES=(str buffer file os int float)
 
 # `--embed-file vendor` etc. are relative to the payload dir so the embedded
 # virtual FS paths are /vendor/tinyactor/lib/... , /hello.ta , /hello.tabc .

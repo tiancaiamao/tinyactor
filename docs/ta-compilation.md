@@ -122,7 +122,7 @@ tag 区间落在 IEEE 754 负 NaN 区（指数全 1、符号位 1），任何有
 
 **Int**：48 位载荷（`val_payload48`），读取时从第 47 位符号扩展
 （`src/val.c` 的 `val_int` / `val_get_int`）。任何 Int 值装箱时归一化到
-[-2^47, 2^47-1]（`src/num.c`）。算术在 int64 中间结果上进行，`val_int` 装箱
+[-2^47, 2^47-1]（`lib/float.c`）。算术在 int64 中间结果上进行，`val_int` 装箱
 截断低 48 位。`*` 可能溢出 int64（C UB），当前依赖 `-O2` 下的补码回绕行为；
 若某编译器/优化组合上出现偏差，正确做法是 Makefile 加 `-fwrapv`。
 

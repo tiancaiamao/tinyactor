@@ -18,7 +18,6 @@
 // proc_push 自动增长兜底（栈堆相撞时扩 arena），不再有 stack_cap 检查。
 //
 // 用法: tavm [-q] [--profile[=base]] file.tabc [目标程序参数...]
-#include "host.h"
 #include "ta.h"
 #include "ta_inline.h"
 
@@ -524,11 +523,103 @@ static void install_frame_hooks(void) {
     g_vm->walk_stack = lisp_walk_stack;
 }
 
-/* 裸名谓词 cfunc（compile.ta bare_cfunc 白名单的宿主侧契约）与 NWORKERS
- * 的处理已下沉到 src/host.c。见 src/host.h。 */
+/* ============================================================
+ * 宿主初始化：VM + 裸名谓词 + 静态 C 模块注册
+ * ============================================================ */
+
+/* C 的 1/0 → TA 布尔值：六个谓词的公共收尾。 */
+static Val truth(int yes) { return yes ? val_true() : val_false(); }
+
+/* 语义对齐 ta_inline.h 的 val_is_*。 */
+static Val cfunc_intp(VM *vm, Val *a, int n) { return truth(val_is_int(a[0])); }
+static Val cfunc_stringp(VM *vm, Val *a, int n) { return truth(val_is_string(a[0])); }
+static Val cfunc_bytesp(VM *vm, Val *a, int n) { return truth(val_is_bytes(a[0])); }
+static Val cfunc_pidp(VM *vm, Val *a, int n) { return truth(val_is_pid(a[0])); }
+static Val cfunc_floatp(VM *vm, Val *a, int n) { return truth(val_is_float(a[0])); }
+/* bool?: TAG_TRUE / TAG_FALSE 两个立即数标签，没有 val_is_* 可用。 */
+static Val cfunc_boolp(VM *vm, Val *a, int n) {
+    uint64_t t = val_tag(a[0]);
+    return truth(t == TAG_TRUE || t == TAG_FALSE);
+}
+
+/* 名字 ↔ 入口，循环注册时名字只有这一处。元数恒 1：compile.ta 的
+ * bare_cfunc 白名单里这些谓词都是一元，漏注册就炸在装载期
+ * （link_unit 的 fatal_unknown_cfunc）—— 这张表是该白名单的宿主侧契约。 */
+static const struct {
+    const char *name;
+    Val (*fn)(VM *vm, Val *args, int nargs);
+} bare_preds[] = {
+    {"int?", cfunc_intp}, {"string?", cfunc_stringp}, {"bytes?", cfunc_bytesp},
+    {"pid?", cfunc_pidp}, {"float?", cfunc_floatp},   {"bool?", cfunc_boolp},
+};
+
+/* worker 池大小 = NWORKERS 环境变量，默认 1（不设 = 单线程内联，与历史行为
+ * 逐字节同路径）。默认关是刻意的：多核是显式开的能力，不是默认行为 ——
+ * 所有既有测试/基准的语义基准是单线程，池只加并行度、不改语义。垃圾值/
+ * 1/0/负数一律回落默认，不报错；上限由池自己钳（scheduler.c 的
+ * MAX_WORKERS），宿主不认识池的界。 */
+static void host_nworkers(VM *vm) {
+    const char *env = getenv("NWORKERS");
+    if (!env || !*env)
+        return;
+    int n = atoi(env);
+    if (n > 1)
+        vm->nworkers = n;
+}
+
+/* wasm 没有 dlopen：Playground 的编译器自己读源码、拼字符串、出错退出全靠
+ * str / buffer / file / os，用户程序还会调 int / float 的跨界转换，所以
+ * build-wasm.sh 把这些静态链接进 VM，在这里显式注册。表里的符号由那一遍编译的
+ *   -Dvm_load_self=ta_wasm_<mod>_load_self
+ * 改名造出（每个 lib/<mod>.c 都导出同名入口，静态链接会撞车）。加模块 =
+ * 这里加一行 + build-wasm.sh 的 WASM_C_MODULES 加一个目录名，两处名字必须
+ * 一致（漏改是链接期 undefined symbol，不是静默失效）。原生构建走不到这里，
+ * 模块照样按需 dlopen。 */
+#ifdef __EMSCRIPTEN__
+void ta_wasm_str_load_self(VM *vm);
+void ta_wasm_buffer_load_self(VM *vm);
+void ta_wasm_file_load_self(VM *vm);
+void ta_wasm_os_load_self(VM *vm);
+void ta_wasm_int_load_self(VM *vm);
+void ta_wasm_float_load_self(VM *vm);
+
+static void host_wasm_static_modules(VM *vm) {
+    ta_wasm_str_load_self(vm);
+    ta_wasm_buffer_load_self(vm);
+    ta_wasm_file_load_self(vm);
+    ta_wasm_os_load_self(vm);
+    ta_wasm_int_load_self(vm);
+    ta_wasm_float_load_self(vm);
+}
+#endif
+
+/* VM 构造 + 静态注册（proc_new 不在这里：两个宿主的 entry 建法不同）。 */
+static VM *host_vm_init(void) {
+    /* 不在 ta.h 里的模块注册入口：file / os / sexp / int / float 等已全部
+     * 下沉为 lazy dylib（首个 file.* / os.raw_* / int.* 引用时
+     * find_cfunc_autoload 自动 dlopen），不在宿主静态注册。 */
+    extern void vm_register_vm_module(VM * vm);
+
+    VM *vm = vm_new();
+    if (!vm)
+        fatal("vm_new failed");
+    host_nworkers(vm);
+    for (size_t i = 0; i < sizeof bare_preds / sizeof bare_preds[0]; i++)
+        vm_register(vm, bare_preds[i].name, bare_preds[i].fn, 1);
+    vm_register_vm_module(vm);
+    vm_register_actor_primitives(vm);
+#ifdef __EMSCRIPTEN__
+    host_wasm_static_modules(vm);
+#endif
+    /* Registry above is host-static from here on: vm.is_builtin_module
+     * (import 解析) must keep answering "no source layer" for exactly these
+     * names even after a lazy dylib (str/file/os/sexp/buffer) dlopens. */
+    vm_seal_host_modules(vm);
+    return vm;
+}
 
 static Proc *host_init(void) {
-    g_vm = ta_host_init();
+    g_vm = host_vm_init();
     Proc *entry = proc_new(g_vm);
     if (!entry)
         fatal("proc_new failed");

@@ -126,6 +126,8 @@ OS_LIB := lib/os$(MOD_SUFFIX).$(HTTP_EXT)
 NET_LIB := lib/net$(MOD_SUFFIX).$(HTTP_EXT)
 TIMER_LIB := lib/timer$(MOD_SUFFIX).$(HTTP_EXT)
 COV_LIB := lib/cov$(MOD_SUFFIX).$(HTTP_EXT)
+INT_LIB := lib/int$(MOD_SUFFIX).$(HTTP_EXT)
+FLOAT_LIB := lib/float$(MOD_SUFFIX).$(HTTP_EXT)
 
 # Export the per-config module infix to every recipe's environment so test
 # harnesses that fabricate stub modules (test/run_crash_tests.sh) name them the
@@ -231,7 +233,7 @@ lib/%_tsan.$(HTTP_EXT): MOD_LDLIBS := $(TSAN_LDFLAGS)
 lib/%_cov.$(HTTP_EXT): MOD_CFLAGS := $(MOD_BASEFLAGS) -O2 -DTA_MOD_TAG=cov
 lib/%_cov.$(HTTP_EXT): MOD_LDLIBS :=
 
-SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/gc.c src/resource.c src/api.c src/num.c src/prof.c src/host.c src/host-wasm.c src/main.c
+SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/gc.c src/resource.c src/api.c src/prof.c src/main.c
 OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
@@ -247,7 +249,7 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 # must leave a runtime where scripts can actually call demo/math/time/
 # buffer/process (the dylibs are lazy-loaded; a missing one makes the call
 # silently push nil instead of erroring).
-all: tavm $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB) $(SEXP_LIB) $(ENCODING_LIB) $(RANDOM_LIB) $(STR_LIB) $(TLS_LIB) $(SHA256_LIB) $(FILE_LIB) $(OS_LIB) $(NET_LIB) $(TIMER_LIB) $(COV_LIB)
+all: tavm $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB) $(SEXP_LIB) $(ENCODING_LIB) $(RANDOM_LIB) $(STR_LIB) $(TLS_LIB) $(SHA256_LIB) $(FILE_LIB) $(OS_LIB) $(NET_LIB) $(TIMER_LIB) $(COV_LIB) $(INT_LIB) $(FLOAT_LIB)
 
 # vendor/ 是生成物，tinyactor.deps 才是入 git 的那份（唯一真相）：
 # import "<树名>:<路径>" 只解析到 <根>/vendor/<树名>/<路径>.ta，所以仓库根
@@ -333,6 +335,10 @@ OS_MODS = lib/os.$(HTTP_EXT) lib/os_asan.$(HTTP_EXT) lib/os_tsan.$(HTTP_EXT) lib
 NET_MODS = lib/net.$(HTTP_EXT) lib/net_asan.$(HTTP_EXT) lib/net_tsan.$(HTTP_EXT) lib/net_cov.$(HTTP_EXT)
 TIMER_MODS = lib/timer.$(HTTP_EXT) lib/timer_asan.$(HTTP_EXT) lib/timer_tsan.$(HTTP_EXT) lib/timer_cov.$(HTTP_EXT)
 COV_MODS = lib/cov.$(HTTP_EXT) lib/cov_asan.$(HTTP_EXT) lib/cov_tsan.$(HTTP_EXT) lib/cov_cov.$(HTTP_EXT)
+# int / float — 数值塔的跨界转换（int.to_float / float.to_int）。编译器自己
+# 不用它们，所以只进 TEST_DEPS；`make all` 也建，免得手跑脚本时缺库。
+INT_MODS = lib/int.$(HTTP_EXT) lib/int_asan.$(HTTP_EXT) lib/int_tsan.$(HTTP_EXT) lib/int_cov.$(HTTP_EXT)
+FLOAT_MODS = lib/float.$(HTTP_EXT) lib/float_asan.$(HTTP_EXT) lib/float_tsan.$(HTTP_EXT) lib/float_cov.$(HTTP_EXT)
 # buffer module — the .tabc writer (lib/bootstrap/bytecode.ta) composes its
 # text in a Buffer, so the dylib is a driver runtime prerequisite exactly
 # like str/file/os. Defined here, before DRIVER_DEPS reads it (same
@@ -463,6 +469,15 @@ $(NET_MODS): lib/net.c $(HDRS)
 $(TIMER_MODS): lib/timer.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
+# int / float — 数值塔的跨界转换，各一个函数。原先合住 src/num.c 静态注册，
+# 是「C 模块都在 lib/」唯一的例外；拆开之后布局只剩一条规则：一个模块名
+# 一个 lib/<名字>.c（懒加载器按首段推 dylib 名，没有例外可写）。
+$(INT_MODS): lib/int.c $(HDRS)
+	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
+
+$(FLOAT_MODS): lib/float.c $(HDRS)
+	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
+
 # cov module — lazy dylib like net, no reverse edge at all (the poller
 # never touches it); cov_dump_env died with the move (no caller).
 $(COV_MODS): lib/cov.c $(HDRS)
@@ -589,7 +604,7 @@ benchmark-clean:
 # 的第一个 sexp.* 调用就 fatal（`cannot load C module 'sexp' from
 # lib/sexp.so: <dlerror>`，见 main.c find_cfunc_autoload）——以前是静默压 nil，劣化成无限分配（arena exhausted abort）
 # 或符号表缺项（undefined: null?）。
-TEST_DEPS = tinyactor vendor $(DRIVER_DEPS) lib/bootstrap.tabc $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS) $(ENCODING_MODS) $(RANDOM_MODS) $(TLS_MODS) $(SHA256_MODS) $(NET_MODS) $(TIMER_MODS) $(COV_MODS)
+TEST_DEPS = tinyactor vendor $(DRIVER_DEPS) lib/bootstrap.tabc $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS) $(ENCODING_MODS) $(RANDOM_MODS) $(TLS_MODS) $(SHA256_MODS) $(NET_MODS) $(TIMER_MODS) $(COV_MODS) $(INT_MODS) $(FLOAT_MODS)
 
 test-basic: $(TEST_DEPS)
 	@bash test/run_basic_tests.sh
