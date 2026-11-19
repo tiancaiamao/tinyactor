@@ -475,8 +475,8 @@ $(TIMER_MODS): lib/timer.c $(HDRS)
 $(INT_MODS): lib/int.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
-# -lm：float.c 用 trunc / fmod（libm 符号），Linux 上 dlopen(RTLD_NOW) 时
-# 必须有直接依赖才解析得出来——macOS 靠 libSystem 顺带导出，看不出来。
+# -lm：float.c 用 trunc / fmod（libm 符号）。跟 math 规则一样显式写上，不指望
+# 平台把 libm 顺带导出（macOS 的 libSystem、新 glibc 都会，旧的就未必）。
 $(FLOAT_MODS): lib/float.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< -lm $(MOD_LDLIBS)
 
