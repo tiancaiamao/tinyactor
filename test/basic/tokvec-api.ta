@@ -1,7 +1,7 @@
-// issue #121: token-vector registry is per-proc (was a process-wide,
-// thread-unsafe table in api.c). Exercises make/tok_type/tok_val/free
-// directly, plus the proc-death cleanup path (run under ASAN/TSAN to
-// verify no leak and no use-after-free).
+// The token-vector handle is a Resource (issue #401): exercises
+// make/tok_type/tok_val/free, the stale-handle path (a handle sent to
+// another actor transfers ownership), and the proc-death cleanup path
+// (run under ASAN/TSAN to verify no leak and no use-after-free).
 // expect: PASS tokvec-api
 
 // tokens are tokenizer.Token values (tuple 'Kind payload? at), as produced
@@ -13,7 +13,7 @@ fn main() {
     let toks = cons(tokenizer.TInt(42, 0), cons(tokenizer.TString("hi", 5), cons(tokenizer.TInt(0, 9), nil)));
 
     let id = vm.make_tok_vec(toks);
-    let c0 = if id >= 0 { 1 } else { 0 };
+    let c0 = if null?(id) { 0 } else { 1 };
 
     // types
     let c1 = if vm.tok_type(id, 0) == 'int { 1 } else { 0 };
@@ -32,21 +32,23 @@ fn main() {
     let c8 = if vm.tok_at(id, 99) == 0 { 1 } else { 0 };
 
     vm.free_tok_vec(id);
+    // released handle: the ops see a closed resource, not a crash
+    let c9 = if null?(vm.tok_val(id, 0)) { 1 } else { 0 };
 
     // spawn a proc that makes a tok vec and abandons it, then dies —
-    // proc_die must free it (per-proc ownership, issue #121 leak).
+    // the GC / teardown fallback must release it.
     let me = self();
     let n = spawn(fn {
         let t = vm.make_tok_vec(cons(tokenizer.TInt(7, 0), nil));
-        if t < 0 { send(me, 0); } else {
+        if null?(t) { send(me, 0); } else {
             send(me, vm.tok_val(t, 0));
         }
     });
     let got = recv();
-    let c9 = if got == 7 { 1 } else { 0 };
+    let c10 = if got == 7 { 1 } else { 0 };
 
-    let total = c0 + c1 + c2 + c3 + c4 + c5 + c6 + c7 + c8 + c9;
-    if total == 10 { print("PASS tokvec-api"); } else {
+    let total = c0 + c1 + c2 + c3 + c4 + c5 + c6 + c7 + c8 + c9 + c10;
+    if total == 11 { print("PASS tokvec-api"); } else {
         print("FAIL tokvec-api");
     }
 }
