@@ -43,8 +43,8 @@ TA 上层（全部保留,不动）
   `Top → .kl` 只是 I/O 序列化；`.kl → Top` 是它的逆，读入侧一处 `form.parse_program`
   （手写 `.kl` 与前奏文本）。形状判断（这是符号还是调用）只在那一处读入边界
   发生一次 —— 见 `docs/kl-format.md`。
-- **不做「两个后端」。** 旧 `.tabc` 路径是自举输入（`ta.h` 的 `OpCode` 枚举注释
-  明写「新 opcode 必须追加在末尾、绝不能重编号」），碰它就断自举链。所以不存在「新后端接管、
+- **不做「两个后端」。** 旧 `.tabc` 路径是自举输入（`ta.h` 的 `LOP_*` 枚举注释明写
+  「新 opcode 必须追加在末尾、绝不能重编号」），碰它就断自举链。所以不存在「新后端接管、
   旧后端留着」——只有**同一个 TA 编译产物，由不同的 VM 解释**。
 - **性能收益已量化**：collatz 1M 同一负载，tavm（桥接 TA 运行时后）≈ 6.3 s，
   tavm ≈ 8.7 s。纯自建内核时期曾测得 4.9 s，接回 TA 堆/GC 是有意的取舍。
@@ -244,7 +244,7 @@ tavm 自己没有函数库，宿主能力按名解析，不需要任何声明—
 
 **1. GLOBAL 在装载期定死。** `link_unit` 把「本单元 define 的名字」重定位成 fnid；
 其余 GLOBAL 按名解析成 cfunc 下标（`vm_find_cfunc` → 带点名字 dlopen
-`lib/<mod>.<ext>` 自动加载，照抄 `CASE(OP_CCALL_NAME)` 的 miss 路径），操作数
+`lib/<mod>.<ext>` 自动加载，照抄 `do_ccall` 的 miss 路径），操作数
 存 `-(cf)-1`。CALL 期拿到负数直接 `vm->cfuncs[cf]` 调用：零按名查找、零
 strcmp（同 Erlang call_ext：解析一次，热路径走下标）。解析不到则**装载时**
 **显式报错**，退出 1，三种失败模式各有专项诊断（`main.c` 的
@@ -642,7 +642,7 @@ TA 上层（保留不动）tokenizer → parser → typecheck → ast(sexp)
                                 GC / 堆 / 调度 / C 模块 / arena ← 全部继承 TA
 ```
 
-- 旧 `.tabc` 路径是**自举输入**（`ta.h` 的 `OpCode` 枚举注释明写「新 opcode 追加在末尾、绝不能
+- 旧 `.tabc` 路径是**自举输入**（`ta.h` 的 `LOP_*` 枚举注释明写「新 opcode 追加在末尾、绝不能
   重编号」），碰它就断自举链。所以目标形态是**同一个 TA 编译产物，由不同的 VM
   解释**，不是换一个编译器。
 - 迁移路径：tavm 核心先剥到最小（已完成）→ `compile.ta` 改吃 TA 的 ast →

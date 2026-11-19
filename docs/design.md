@@ -213,10 +213,9 @@ tag 区间整体落在 IEEE 754「指数全 1、符号位 1」的负 NaN 区（i
 > 状态：下表是**设计期清单**，与现行 ISA 不完全一致。现行解释器执行 `ta.h` 的
 > `LOP_*` 枚举（`vm.c` 的 `dispatch[LOP_COUNT]`）；actor 原语（spawn/send/
 > recv/monitor）不是 opcode，而是宿主注册的裸名 cfunc，走
-> `CALL → TAG_NATIVE → do_ccall`；`ta.h` 的 `OpCode` 枚举里只留历史保留洞。
-> `LOAD_MODULE` / `CALL_INDIRECT` / `MONITOR_DEMON` 不在任何枚举中；
-> `OP_ENTER` / `OP_CCALL_NAME` / `OP_NE` / `OP_PUSH_FLOAT` /
-> `OP_IS_SYMBOL` 等现行 opcode 本表未列。
+> `CALL → TAG_NATIVE → do_ccall`。`LOAD_MODULE` / `CALL_INDIRECT` /
+> `MONITOR_DEMON` 不在任何枚举中；现行 ISA 里的融合指令与立即数操作数形态
+> （`LOP_LOADP` / `LOP_JIF_*` / `LOP_ADD_I` / `LOP_TUPLE*` …）本表未列。
 
 | 类别 | 指令 | 说明 |
 |------|------|------|

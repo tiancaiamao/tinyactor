@@ -147,7 +147,7 @@ GC 只收自己的）。
 **per-proc 的 `gc_gate` 门**罩住所有无法满足该前提的区段。以前要 `gc_root_push` /
 `GC_ROOTS_SCOPE` 的两条理由，现在都被结构性保证了：
 
-1. **C 回调期间不会发生 GC**：`OP_CCALL_NAME` 用 `proc_gc_enter` 把整个 C 调用罩
+1. **C 回调期间不会发生 GC**：`do_ccall` 用 `proc_gc_enter` 把整个 C 调用罩
    在门内，回调里的分配只置 `gc_pending`，要等回调返回、结果压回 TA 栈后
    `proc_gc_reopen` 才补收。所以回调里的 C 局部 `Val` 在整个回调期间都指向同一个
    活对象。
