@@ -209,20 +209,16 @@ typedef struct {
     Val value;
 } CopyTask;
 
-#define COPY_VALUE 0
-#define COPY_PAIR 1
-#define COPY_CLOSURE 2
-#define COPY_TUPLE 3
+#define COPY_VALUE 0 /* 求值：拷贝 task.value 这个子值 */
+#define COPY_NODE 1  /* 装配：task.value 是个孩子都拷好了的容器 */
 
-static void copy_grow(void **items, int *cap, int count, size_t size) {
-    if (count < *cap)
-        return;
-    int next = *cap ? *cap * 2 : 64;
-    void *grown = realloc(*items, (size_t)next * size);
-    if (!grown)
-        abort();
-    *items = grown;
-    *cap = next;
+/* 把副本地址写进 chunk 对象的 forwarding 槽（与 GC 同一个套路：紧跟
+ * HeapHeader 的那 8 字节）。arena 拷完整块释放，标记不用清理。
+ * 闭包不能这么转发 —— 那 8 字节对它是 entry/nfree，分配时也没给槽留位置。 */
+static void chunk_forward(void *payload, Val copy) {
+    ((HeapHeader *)payload)->flags |= FLAG_FORWARDED;
+    void *fwd = val_heap_ptr(copy);
+    memcpy((uint8_t *)payload + sizeof(HeapHeader), &fwd, sizeof(void *));
 }
 
 Val val_deep_copy(Proc *target, Val root, int *res_err) {
@@ -244,87 +240,65 @@ Val val_deep_copy(Proc *target, Val root, int *res_err) {
     int seen_count = 0, seen_cap = 0;
     Val result;
 
-    copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
-    tasks[task_count++] = (CopyTask){COPY_VALUE, root};
+    TA_PUSH(tasks, task_count, task_cap, ((CopyTask){COPY_VALUE, root}));
 
     while (task_count > 0) {
         CopyTask task = tasks[--task_count];
-        uint16_t tag = val_tag(task.value);
+        Val v = task.value;
+        uint16_t tag = val_tag(v);
 
-        if (task.kind == COPY_PAIR) {
-            Val cdr = results[--result_count];
-            Val car = results[--result_count];
-            copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = val_pair(target, car, cdr);
-            continue;
-        }
-        if (task.kind == COPY_CLOSURE) {
-            HeapClosure *src = (HeapClosure *)(uintptr_t)val_payload48(task.value);
-            int total = sizeof(HeapClosure) + (int)(src->nfree * sizeof(Val));
-            HeapClosure *dst = (HeapClosure *)proc_heap_alloc(target, total);
-            dst->hdr.type = HEAP_CLOS;
-            dst->hdr.flags = 0;
-            dst->entry = src->entry;
-            dst->nfree = src->nfree;
-            for (int i = src->nfree - 1; i >= 0; i--)
-                dst->free[i] = results[--result_count];
-            copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = box_tag_payload(TAG_CLOS, (uint64_t)(uintptr_t)dst);
-            continue;
-        }
-        if (task.kind == COPY_TUPLE) {
-            /* 槽数从源对象读（任务里不必再存一份 n）：slot[i] 的结果按 i 升序
-             * 压在 results 上，故倒序弹回。 */
-            int n = val_tuple_len(task.value);
-            Val nv = val_tuple_new(target, n);
-            HeapTuple *dst = val_as_tuple(nv);
-            for (int i = n - 1; i >= 0; i--)
-                dst->slot[i] = results[--result_count];
-            copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = nv;
-            continue;
-        }
-
-        if (val_is_float(task.value) || tag == TAG_INT || tag == TAG_NIL || tag == TAG_TRUE ||
-            tag == TAG_FALSE || tag == TAG_PID || tag == TAG_SYM || tag == TAG_CLOS_ID ||
-            tag == TAG_NATIVE) {
-            copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = task.value;
-        } else if (tag == TAG_PAIR) {
-            HeapPair *src = (HeapPair *)(uintptr_t)val_payload48(task.value);
-            copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
-            tasks[task_count++] = (CopyTask){COPY_PAIR, task.value};
-            copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
-            tasks[task_count++] = (CopyTask){COPY_VALUE, src->cdr};
-            copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
-            tasks[task_count++] = (CopyTask){COPY_VALUE, src->car};
-        } else if (tag == TAG_TUPLE) {
-            HeapTuple *src = val_as_tuple(task.value);
-            int n = src->len;
-            copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
-            tasks[task_count++] = (CopyTask){COPY_TUPLE, task.value};
-            for (int i = n - 1; i >= 0; i--) {
-                copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
-                tasks[task_count++] = (CopyTask){COPY_VALUE, src->slot[i]};
+        if (task.kind == COPY_NODE) {
+            /* 孩子已按构造顺序压在 results 上，倒序弹回。 */
+            if (tag == TAG_PAIR) {
+                Val cdr = results[--result_count];
+                Val car = results[--result_count];
+                TA_PUSH(results, result_count, result_cap, val_pair(target, car, cdr));
+            } else if (tag == TAG_TUPLE) {
+                int n;
+                val_node_shape(NULL, v, &n, NULL);
+                Val nv = val_tuple_new(target, n);
+                HeapTuple *dst = val_as_tuple(nv);
+                for (int i = n - 1; i >= 0; i--)
+                    dst->slot[i] = results[--result_count];
+                TA_PUSH(results, result_count, result_cap, nv);
+            } else {
+                HeapClosure *src = val_as_clos(v);
+                int n = src->nfree;
+                HeapClosure *dst = (HeapClosure *)proc_heap_alloc(
+                    target, sizeof(HeapClosure) + (int)(n * sizeof(Val)));
+                dst->hdr.type = HEAP_CLOS;
+                dst->hdr.flags = 0;
+                dst->entry = src->entry;
+                dst->nfree = n;
+                for (int i = n - 1; i >= 0; i--)
+                    dst->free[i] = results[--result_count];
+                TA_PUSH(results, result_count, result_cap,
+                        box_tag_payload(TAG_CLOS, (uint64_t)(uintptr_t)dst));
             }
-        } else if (tag == TAG_STRING) {
-            HeapString *src = (HeapString *)(uintptr_t)val_payload48(task.value);
-            copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = val_string(target, src->data, src->len);
+            continue;
+        }
+
+        int nk;
+        const Val *kids = val_node_shape(NULL, v, &nk, NULL);
+        if (kids) {
+            /* 先压装配任务，再倒序压孩子：孩子全拷完才轮到装配。 */
+            TA_PUSH(tasks, task_count, task_cap, ((CopyTask){COPY_NODE, v}));
+            for (int i = nk - 1; i >= 0; i--)
+                TA_PUSH(tasks, task_count, task_cap, ((CopyTask){COPY_VALUE, kids[i]}));
+            continue;
+        }
+        if (!val_is_heap(v)) { /* 立即数 */
+            TA_PUSH(results, result_count, result_cap, v);
+            continue;
+        }
+        if (tag == TAG_STRING) {
+            HeapString *src = val_heap_ptr(v);
+            TA_PUSH(results, result_count, result_cap, val_string(target, src->data, src->len));
         } else if (tag == TAG_BYTES) {
-            HeapBytes *src = (HeapBytes *)(uintptr_t)val_payload48(task.value);
-            copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = val_bytes(target, src->data, src->len);
-        } else if (tag == TAG_CLOS) {
-            HeapClosure *src = (HeapClosure *)(uintptr_t)val_payload48(task.value);
-            copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
-            tasks[task_count++] = (CopyTask){COPY_CLOSURE, task.value};
-            for (int i = src->nfree - 1; i >= 0; i--) {
-                copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
-                tasks[task_count++] = (CopyTask){COPY_VALUE, src->free[i]};
-            }
+            HeapBytes *src = val_heap_ptr(v);
+            TA_PUSH(results, result_count, result_cap, val_bytes(target, src->data, src->len));
         } else if (tag == TAG_RESOURCE) {
-            HeapResource *src = (HeapResource *)(uintptr_t)val_payload48(task.value);
+            HeapResource *src = val_heap_ptr(v);
             if (res_err) {
                 /* 收口校验（spawn 路径，docs/c-resource-design.md §4）：
                  * owner 必须是当前 proc（父），同一消息里的 payload 不重复
@@ -352,12 +326,10 @@ Val val_deep_copy(Proc *target, Val root, int *res_err) {
             dst->h.flags = 0;
             dst->owner_pid = src->owner_pid;
             dst->res = src->res; /* payload 共享 */
-            if (res_err) {
-                copy_grow((void **)&seen, &seen_cap, seen_count, sizeof(*seen));
-                seen[seen_count++] = dst;
-            }
-            copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = box_tag_payload(TAG_RESOURCE, (uint64_t)(uintptr_t)dst);
+            if (res_err)
+                TA_PUSH(seen, seen_count, seen_cap, dst);
+            TA_PUSH(results, result_count, result_cap,
+                    box_tag_payload(TAG_RESOURCE, (uint64_t)(uintptr_t)dst));
         } else {
             fprintf(stderr, "val_deep_copy: unknown tag 0x%x\n", tag);
             abort(); /* 不许静默变 nil（docs/c-resource-design.md §8） */
@@ -384,52 +356,20 @@ copy_done:
  * under). Callers use it to reserve arena room before a gate-closed copy:
  * the copy itself cannot grow the arena — its worklist holds unrooted
  * Vals — so the room must exist beforehand (proc_reserve_heap). */
-typedef struct {
-    Val value;
-} SizeTask;
-
 int val_calc_heap_size(Val root) {
-    SizeTask *tasks = NULL;
-    int count = 0, cap = 0;
-    int total = 0;
+    Val *work = NULL;
+    int n = 0, cap = 0, total = 0;
 
-    copy_grow((void **)&tasks, &cap, count, sizeof(*tasks));
-    tasks[count++].value = root;
-    while (count > 0) {
-        Val v = tasks[--count].value;
-        uint16_t tag = val_tag(v);
-        if (tag == TAG_PAIR) {
-            HeapPair *src = (HeapPair *)(uintptr_t)val_payload48(v);
-            total += ta_heap_object_size(sizeof(HeapPair));
-            copy_grow((void **)&tasks, &cap, count, sizeof(*tasks));
-            tasks[count++].value = src->cdr;
-            copy_grow((void **)&tasks, &cap, count, sizeof(*tasks));
-            tasks[count++].value = src->car;
-        } else if (tag == TAG_STRING) {
-            HeapString *s = (HeapString *)(uintptr_t)val_payload48(v);
-            total += ta_heap_object_size(sizeof(HeapString) + s->len + 1);
-        } else if (tag == TAG_BYTES) {
-            HeapBytes *b = (HeapBytes *)(uintptr_t)val_payload48(v);
-            total += ta_heap_object_size(sizeof(HeapBytes) + b->len);
-        } else if (tag == TAG_TUPLE) {
-            HeapTuple *t = val_as_tuple(v);
-            total += ta_heap_object_size(sizeof(HeapTuple) + t->len * (int)sizeof(Val));
-            for (int i = t->len - 1; i >= 0; i--) {
-                copy_grow((void **)&tasks, &cap, count, sizeof(*tasks));
-                tasks[count++].value = t->slot[i];
-            }
-        } else if (tag == TAG_RESOURCE) {
-            total += ta_heap_object_size(sizeof(HeapResource));
-        } else if (tag == TAG_CLOS) {
-            HeapClosure *c = (HeapClosure *)(uintptr_t)val_payload48(v);
-            total += ta_heap_object_size(sizeof(HeapClosure) + c->nfree * (int)sizeof(Val));
-            for (int i = c->nfree - 1; i >= 0; i--) {
-                copy_grow((void **)&tasks, &cap, count, sizeof(*tasks));
-                tasks[count++].value = c->free[i];
-            }
-        }
+    TA_PUSH(work, n, cap, root);
+    while (n > 0) {
+        Val v = work[--n];
+        int nk, raw;
+        const Val *kids = val_node_shape(NULL, v, &nk, &raw);
+        total += ta_heap_object_size(raw);
+        for (int i = nk - 1; i >= 0; i--)
+            TA_PUSH(work, n, cap, kids[i]);
     }
-    free(tasks);
+    free(work);
     return total;
 }
 
@@ -450,140 +390,101 @@ Val val_converge_copy(Proc *target, Val root) {
     int task_count = 0, task_cap = 0;
     int result_count = 0, result_cap = 0;
 
-    copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
-    tasks[task_count++] = (CopyTask){COPY_VALUE, root};
+    TA_PUSH(tasks, task_count, task_cap, ((CopyTask){COPY_VALUE, root}));
 
     while (task_count > 0) {
         CopyTask task = tasks[--task_count];
-        uint16_t tag = val_tag(task.value);
+        Val v = task.value;
+        uint16_t tag = val_tag(v);
 
-        if (task.kind == COPY_PAIR) {
-            Val cdr = results[--result_count];
-            Val car = results[--result_count];
-            Val nv = val_pair(target, car, cdr);
-            /* Leave a forwarding pointer so later occurrences of this pair
-             * (DAG sharing) reuse the copy instead of duplicating it. */
-            HeapHeader *h = (HeapHeader *)(uintptr_t)val_payload48(task.value);
-            h->flags |= FLAG_FORWARDED;
-            void *fwd = (void *)(uintptr_t)val_payload48(nv);
-            memcpy((uint8_t *)h + sizeof(HeapHeader), &fwd, sizeof(void *));
-            copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = nv;
-            continue;
-        }
-        if (task.kind == COPY_TUPLE) {
-            int n = val_tuple_len(task.value);
-            Val nv = val_tuple_new(target, n);
-            HeapTuple *dst = val_as_tuple(nv);
-            for (int i = n - 1; i >= 0; i--)
-                dst->slot[i] = results[--result_count];
-            HeapHeader *h = (HeapHeader *)(uintptr_t)val_payload48(task.value);
-            h->flags |= FLAG_FORWARDED;
-            void *fwd = (void *)(uintptr_t)dst;
-            memcpy((uint8_t *)h + sizeof(HeapHeader), &fwd, sizeof(void *));
-            copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = nv;
-            continue;
-        }
-        if (task.kind == COPY_CLOSURE) {
-            HeapClosure *src = (HeapClosure *)(uintptr_t)val_payload48(task.value);
-            int total = sizeof(HeapClosure) + (int)(src->nfree * sizeof(Val));
-            HeapClosure *dst = (HeapClosure *)proc_heap_alloc(target, total);
-            dst->hdr.type = HEAP_CLOS;
-            dst->hdr.flags = 0;
-            dst->entry = src->entry;
-            dst->nfree = src->nfree;
-            for (int i = src->nfree - 1; i >= 0; i--)
-                dst->free[i] = results[--result_count];
-            HeapHeader *h = (HeapHeader *)src;
-            h->flags |= FLAG_FORWARDED;
-            void *fwd = (void *)(uintptr_t)dst;
-            memcpy((uint8_t *)h + sizeof(HeapHeader), &fwd, sizeof(void *));
-            copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = box_tag_payload(TAG_CLOS, (uint64_t)(uintptr_t)dst);
+        if (task.kind == COPY_NODE) {
+            Val nv;
+            if (tag == TAG_PAIR) {
+                Val cdr = results[--result_count];
+                Val car = results[--result_count];
+                nv = val_pair(target, car, cdr);
+            } else if (tag == TAG_TUPLE) {
+                int n;
+                val_node_shape(NULL, v, &n, NULL);
+                nv = val_tuple_new(target, n);
+                HeapTuple *dst = val_as_tuple(nv);
+                for (int i = n - 1; i >= 0; i--)
+                    dst->slot[i] = results[--result_count];
+            } else {
+                HeapClosure *src = val_as_clos(v);
+                int n = src->nfree;
+                HeapClosure *dst = (HeapClosure *)proc_heap_alloc(
+                    target, sizeof(HeapClosure) + (int)(n * sizeof(Val)));
+                dst->hdr.type = HEAP_CLOS;
+                dst->hdr.flags = 0;
+                dst->entry = src->entry;
+                dst->nfree = n;
+                for (int i = n - 1; i >= 0; i--)
+                    dst->free[i] = results[--result_count];
+                nv = box_tag_payload(TAG_CLOS, (uint64_t)(uintptr_t)dst);
+            }
+            /* DAG 共享：留下 forwarding，后出现的同一对象复用这份副本，让
+             * 每个对象只重建一次（分配量守住调用方的 arena 上限，身份也
+             * 稳定）。闭包不能转发，见 chunk_forward 的注释。 */
+            if (tag == TAG_PAIR || tag == TAG_TUPLE)
+                chunk_forward(val_heap_ptr(v), nv);
+            TA_PUSH(results, result_count, result_cap, nv);
             continue;
         }
 
-        if (val_is_float(task.value) || tag == TAG_INT || tag == TAG_NIL || tag == TAG_TRUE ||
-            tag == TAG_FALSE || tag == TAG_PID || tag == TAG_SYM || tag == TAG_CLOS_ID ||
-            tag == TAG_NATIVE) {
-            copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = task.value;
+        if (!val_is_heap(v)) { /* 立即数原样 */
+            TA_PUSH(results, result_count, result_cap, v);
             continue;
         }
-
-        void *payload = (void *)(uintptr_t)val_payload48(task.value);
+        void *payload = val_heap_ptr(v);
         if (!val_in_chunk(target, payload)) {
             /* Arena object: already in the target heap, keep the reference. */
-            copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = task.value;
-        } else if (((HeapHeader *)payload)->flags & FLAG_FORWARDED) {
+            TA_PUSH(results, result_count, result_cap, v);
+            continue;
+        }
+        if (((HeapHeader *)payload)->flags & FLAG_FORWARDED) {
             /* Shared chunk substructure: reuse the copy made for the first
              * occurrence instead of duplicating it — identity and the
              * caller's arena total (CallbackArena.total) depend on
              * rebuilding each object exactly once. */
             void *fwd;
             memcpy(&fwd, (uint8_t *)payload + sizeof(HeapHeader), sizeof(void *));
-            copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = box_tag_payload(tag, (uint64_t)(uintptr_t)fwd);
-        } else if (tag == TAG_PAIR) {
-            HeapPair *src = (HeapPair *)payload;
-            copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
-            tasks[task_count++] = (CopyTask){COPY_PAIR, task.value};
-            copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
-            tasks[task_count++] = (CopyTask){COPY_VALUE, src->cdr};
-            copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
-            tasks[task_count++] = (CopyTask){COPY_VALUE, src->car};
-        } else if (tag == TAG_TUPLE) {
-            HeapTuple *src = (HeapTuple *)payload;
-            copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
-            tasks[task_count++] = (CopyTask){COPY_TUPLE, task.value};
-            for (int i = src->len - 1; i >= 0; i--) {
-                copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
-                tasks[task_count++] = (CopyTask){COPY_VALUE, src->slot[i]};
-            }
-        } else if (tag == TAG_STRING) {
-            HeapString *src = (HeapString *)payload;
-            Val nv = val_string(target, src->data, src->len);
-            ((HeapHeader *)payload)->flags |= FLAG_FORWARDED;
-            void *fwd = (void *)(uintptr_t)val_payload48(nv);
-            memcpy((uint8_t *)payload + sizeof(HeapHeader), &fwd, sizeof(void *));
-            copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = nv;
+            TA_PUSH(results, result_count, result_cap,
+                    box_tag_payload(tag, (uint64_t)(uintptr_t)fwd));
+            continue;
+        }
+        int nk;
+        const Val *kids = val_node_shape(NULL, v, &nk, NULL);
+        if (kids) {
+            TA_PUSH(tasks, task_count, task_cap, ((CopyTask){COPY_NODE, v}));
+            for (int i = nk - 1; i >= 0; i--)
+                TA_PUSH(tasks, task_count, task_cap, ((CopyTask){COPY_VALUE, kids[i]}));
+            continue;
+        }
+        /* 原子堆对象：string / bytes / resource，拷进堆并转发。 */
+        Val nv;
+        if (tag == TAG_STRING) {
+            HeapString *src = payload;
+            nv = val_string(target, src->data, src->len);
         } else if (tag == TAG_BYTES) {
-            HeapBytes *src = (HeapBytes *)payload;
-            Val nv = val_bytes(target, src->data, src->len);
-            ((HeapHeader *)payload)->flags |= FLAG_FORWARDED;
-            void *fwd = (void *)(uintptr_t)val_payload48(nv);
-            memcpy((uint8_t *)payload + sizeof(HeapHeader), &fwd, sizeof(void *));
-            copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = nv;
-        } else if (tag == TAG_CLOS) {
-            HeapClosure *src = (HeapClosure *)payload;
-            copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
-            tasks[task_count++] = (CopyTask){COPY_CLOSURE, task.value};
-            for (int i = src->nfree - 1; i >= 0; i--) {
-                copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
-                tasks[task_count++] = (CopyTask){COPY_VALUE, src->free[i]};
-            }
+            HeapBytes *src = payload;
+            nv = val_bytes(target, src->data, src->len);
         } else if (tag == TAG_RESOURCE) {
             /* cfunc 在 ccall 窗口里造的资源 header 落在 chunk，回调收敛时
              * rebuild 进堆（payload 不动，共享）；forwarding 同 string。 */
-            HeapResource *src = (HeapResource *)payload;
+            HeapResource *src = payload;
             HeapResource *dst = (HeapResource *)proc_heap_alloc(target, sizeof(HeapResource));
             dst->h.type = HEAP_RESOURCE;
             dst->h.flags = 0;
             dst->owner_pid = src->owner_pid;
             dst->res = src->res;
-            ((HeapHeader *)payload)->flags |= FLAG_FORWARDED;
-            void *fwd = (void *)(uintptr_t)dst;
-            memcpy((uint8_t *)payload + sizeof(HeapHeader), &fwd, sizeof(void *));
-            copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = box_tag_payload(TAG_RESOURCE, (uint64_t)(uintptr_t)dst);
+            nv = box_tag_payload(TAG_RESOURCE, (uint64_t)(uintptr_t)dst);
         } else {
             fprintf(stderr, "val_converge_copy: unknown tag 0x%x\n", tag);
             abort(); /* 不许静默变 nil（docs/c-resource-design.md §8） */
         }
+        chunk_forward(payload, nv);
+        TA_PUSH(results, result_count, result_cap, nv);
     }
 
     Val result = results[0];

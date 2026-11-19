@@ -14,39 +14,12 @@
 #define GC_ASSERT(x) ((void)0)
 #endif
 
-/* gc_obj_size — 单个堆对象的完整分配大小（含 ta_heap_object_size 对齐），
- * resource.c 的线性空间扫描共用同一份尺寸表（步进必须与分配时逐字节
- * 一致，尺寸逻辑不能有两份）。 */
-int gc_obj_size(void *obj) {
-    HeapHeader *h = (HeapHeader *)obj;
-    int size;
-    switch (h->type) {
-    case HEAP_PAIR:
-        size = sizeof(HeapPair);
-        break;
-    case HEAP_CLOS:
-        size = sizeof(HeapClosure) + ((HeapClosure *)obj)->nfree * (int)sizeof(Val);
-        break;
-    case HEAP_STRING:
-        size = sizeof(HeapString) + ((HeapString *)obj)->len + 1;
-        break;
-    case HEAP_BYTES:
-        size = sizeof(HeapBytes) + ((HeapBytes *)obj)->len;
-        break;
-    case HEAP_RESOURCE:
-        size = sizeof(HeapResource); /* 固定：header + owner_pid + res 指针 */
-        break;
-    case HEAP_TUPLE:
-        size = sizeof(HeapTuple) + ((HeapTuple *)obj)->len * (int)sizeof(Val);
-        break;
-    default:
-        GC_ASSERT(h->type == HEAP_PAIR || h->type == HEAP_CLOS || h->type == HEAP_STRING ||
-                  h->type == HEAP_BYTES || h->type == HEAP_RESOURCE || h->type == HEAP_TUPLE);
-        fprintf(stderr, "gc: unknown heap type %d\n", h->type);
-        abort();
-    }
-    return ta_heap_object_size(size);
-}
+/* gc_obj_raw_size — 只有一个裸指针时的入口（GC 搬运、resource.c 的空间
+ * 扫描）：尺寸表唯一一份在 ta_inline.h 的 heap_obj_raw_size（内联版），
+ * 值路径（拷贝 / 预估）直接用它，不必过一次真实调用。 */
+int gc_obj_raw_size(void *obj) { return heap_obj_raw_size((HeapHeader *)obj); }
+
+int gc_obj_size(void *obj) { return ta_heap_object_size(gc_obj_raw_size(obj)); }
 
 static int in_fromspace(Proc *p, void *ptr) {
     return (uint8_t *)ptr >= p->mem && (uint8_t *)ptr < p->mem + p->heap_ptr;

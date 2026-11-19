@@ -525,6 +525,205 @@ static inline int ta_heap_object_size(int size) {
 }
 
 /* ============================================================
+ * 工作表扩容 —— 值树遍历的显式栈
+ * ============================================================
+ *
+ * 遍历不用递归：树深由用户数据决定（深列表能把 C 栈打爆），而且拷贝在关了
+ * GC 门之后必须把中间结果放在 TA 栈之外。四处遍历（深拷 / 大小预估 /
+ * 消息分片 / 资源收集）原先各抄了一份逐字相同的扩容，现在只有这一份。
+ *
+ * TA_PUSH 是全仓唯一的宏：元素类型随遍历而变（Val / CopyTask / 资源指针），
+ * 函数收不下。
+ */
+static inline void ta_arr_grow(void **items, int *cap, int count, int need, size_t size) {
+    if (count + need <= *cap)
+        return;
+    /* 起步 64 是实测值：从 8 起步的翻倍次数翻倍，每条消息多 10~20 次 realloc，
+     * 消息吞吐掉 30%（临时表，1KB 的浪费换掉整串 realloc）。 */
+    int next = *cap ? *cap : 64;
+    while (next < count + need)
+        next *= 2;
+    void *grown = realloc(*items, (size_t)next * size);
+    if (!grown)
+        abort();
+    *items = grown;
+    *cap = next;
+}
+
+#define TA_PUSH(arr, count, cap, v)                                                                \
+    (ta_arr_grow((void **)&(arr), &(cap), (count), 1, sizeof *(arr)), (arr)[(count)++] = (v))
+
+/* ============================================================
+ * 值树的形状 —— 「有几个孩子、第 i 个是谁、占多少字节」
+ * ============================================================
+ *
+ * 消息分片（scheduler.c frag_copy）、深拷（val.c val_deep_copy /
+ * val_converge_copy）、大小预估（val_calc_heap_size / frag_calc_size）、
+ * 资源收集（resource.c）原先各写了一遍 tag 分发：同一份结构知识六份副本，
+ * 加一个堆类型要改六处，漏一处不是崩溃而是**静默少拷一个孩子**。现在只在
+ * 这里。尺寸（val_node_shape → heap_obj_raw_size）同理只有一份。
+ *
+ * 「是容器」与「有几个孩子」必须分开：空 tuple / nfree==0 的闭包是容器、
+ * 孩子数为 0，拷贝仍需一条 post 任务把它装配起来。
+ */
+/* 载荷是堆对象的 6 个 tag；其余 tag 的载荷是立即数（int48 / 符号下标 /
+ * fnid / cfunc 下标）。 */
+static inline int val_is_heap(Val v) {
+    uint16_t tag = val_tag(v);
+    return tag == TAG_PAIR || tag == TAG_CLOS || tag == TAG_STRING || tag == TAG_BYTES ||
+           tag == TAG_RESOURCE || tag == TAG_TUPLE;
+}
+
+/* 载荷 → 通用堆指针（val_is_heap 为真时有效） */
+static inline void *val_heap_ptr(Val v) { return (void *)(uintptr_t)(v & 0x0000FFFFFFFFFFFFULL); }
+
+/* 形状 / 尺寸 / 骨架三处遍历撞到未知 tag 或 type 时走同一个口子：静默当叶子
+ * 会让消息树少一半（docs/c-resource-design.md §8）。写成独立的 noreturn 函数
+ * 而不是就地 fprintf+abort，是为了让下面几个热循环保持小巧 —— 带着 fprintf
+ * 的 switch 过不了内联阈值，每个节点就多一次真实调用（实测 20% 吞吐）。 */
+__attribute__((noreturn)) static inline void ta_unknown_heap_shape(const char *who, int what) {
+    fprintf(stderr, "%s: unknown heap tag/type 0x%x\n", who, what);
+    abort();
+}
+
+/* 尺寸公式的唯一一份：按 HeapHeader->type 分发。gc.c 的 gc_obj_raw_size 是
+ * 它的指针版入口（resource.c 的空间扫描 / GC 只有裸指针）。写在头里是为了
+ * 内联进拷贝与预估的热循环 —— 每条消息的每个节点都要问一次，一次真实调用
+ * 就够了（消息吞吐是一次 send/recv 一个节点级成本）。 */
+static inline int heap_obj_raw_size(const HeapHeader *h) {
+    switch (h->type) {
+    case HEAP_PAIR:
+        return (int)sizeof(HeapPair);
+    case HEAP_CLOS:
+        return (int)sizeof(HeapClosure) + ((const HeapClosure *)h)->nfree * (int)sizeof(Val);
+    case HEAP_STRING:
+        return (int)sizeof(HeapString) + ((const HeapString *)h)->len + 1;
+    case HEAP_BYTES:
+        return (int)sizeof(HeapBytes) + ((const HeapBytes *)h)->len;
+    case HEAP_RESOURCE:
+        return (int)sizeof(HeapResource); /* 固定：header + owner_pid + res 指针 */
+    case HEAP_TUPLE:
+        return (int)sizeof(HeapTuple) + ((const HeapTuple *)h)->len * (int)sizeof(Val);
+    default:
+        ta_unknown_heap_shape("heap_obj_raw_size", h->type); /* 步进错一拍 = 把堆读成垃圾 */
+    }
+}
+
+/* 一个节点的形状，一次问全（拷贝路径的内循环入口）：
+ *   *nkids  孩子数（叶子为 0）
+ *   返回    孩子的连续视图 —— pair 的 car/cdr 相邻、tuple 的 slot[]、closure
+ *           的 free[] 都是紧密的 Val 数组；叶子返回 NULL。顺序即构造顺序。
+ *   *raw    裸字节数（分片布局的原料；堆内账再过一次 ta_heap_object_size）。
+ *           NULL = 这一路不需要尺寸（只问孩子在哪），内联后整段尺寸计算被
+ *           DCE 掉 —— 传个哑元不如传 NULL 实在。
+ *   dst     非 NULL 时顺手把骨架落上去：结构字段照抄、flags 清零（源堆里的
+ *           GC 标记进了分片没有意义）、容器孩子槽留空等装配任务填。
+ *           NULL = 只问形状（大小预估 / 资源收集）。
+ *
+ * 三个问题一次答完（各自的代价见上面每处的注释）：它们每个节点都会被问，
+ * 拆成三次分发就多几次间接跳转。gc.c 只有裸指针、用不了 tag，那边仍走
+ * heap_obj_raw_size。 */
+__attribute__((always_inline)) static inline const Val *val_node_shape(void *dst, Val src,
+                                                                       int *nkids, int *raw) {
+    uint16_t tag = val_tag(src); /* 分发用 tag（寄存器里就有），不回头读 hdr->type：
+                                  * 依赖 load + 跳表每个节点都要多付一次，实测 8%。 */
+    const HeapHeader *sh = val_heap_ptr(src);
+    HeapHeader *dh = dst;
+
+    if (tag == TAG_PAIR) {
+        /* car/cdr 由装配任务写。 */
+        if (dh) {
+            dh->type = HEAP_PAIR;
+            dh->flags = 0;
+        }
+        *nkids = 2;
+        if (raw)
+            *raw = (int)sizeof(HeapPair);
+        return &((const HeapPair *)sh)->car;
+    }
+    if (tag == TAG_TUPLE) {
+        const HeapTuple *s = (const HeapTuple *)sh;
+        if (dh) {
+            HeapTuple *d = (HeapTuple *)dh;
+            d->hdr.type = HEAP_TUPLE;
+            d->hdr.flags = 0;
+            d->len = s->len;
+        }
+        *nkids = s->len;
+        if (raw)
+            *raw = (int)sizeof(HeapTuple) + s->len * (int)sizeof(Val);
+        return s->slot;
+    }
+    if (tag == TAG_CLOS) {
+        const HeapClosure *s = (const HeapClosure *)sh;
+        if (dh) {
+            HeapClosure *d = (HeapClosure *)dh;
+            d->hdr.type = HEAP_CLOS;
+            d->hdr.flags = 0;
+            d->entry = s->entry;
+            d->nfree = s->nfree;
+        }
+        *nkids = s->nfree;
+        if (raw)
+            *raw = (int)sizeof(HeapClosure) + s->nfree * (int)sizeof(Val);
+        return s->free;
+    }
+    if (tag == TAG_STRING) {
+        const HeapString *s = (const HeapString *)sh;
+        if (dh) {
+            HeapString *d = (HeapString *)dh;
+            d->hdr.type = HEAP_STRING;
+            d->hdr.flags = 0;
+            d->len = s->len;
+            memcpy(d->data, s->data, (size_t)s->len + 1);
+        }
+        *nkids = 0;
+        if (raw)
+            *raw = (int)sizeof(HeapString) + s->len + 1;
+        return NULL;
+    }
+    if (tag == TAG_BYTES) {
+        const HeapBytes *s = (const HeapBytes *)sh;
+        if (dh) {
+            HeapBytes *d = (HeapBytes *)dh;
+            d->hdr.type = HEAP_BYTES;
+            d->hdr.flags = 0;
+            d->len = s->len;
+            memcpy(d->data, s->data, (size_t)s->len);
+        }
+        *nkids = 0;
+        if (raw)
+            *raw = (int)sizeof(HeapBytes) + s->len;
+        return NULL;
+    }
+    if (tag == TAG_RESOURCE) {
+        /* payload 在堆外，指针照抄即共享；归属也照抄（校验处已确认 == 发送
+         * 方，入队成功后 mbox_deliver 再统一改写）。 */
+        const HeapResource *s = (const HeapResource *)sh;
+        if (dh) {
+            HeapResource *d = (HeapResource *)dh;
+            d->h.type = HEAP_RESOURCE;
+            d->h.flags = 0;
+            d->owner_pid = s->owner_pid;
+            d->res = s->res;
+        }
+        *nkids = 0;
+        if (raw)
+            *raw = (int)sizeof(HeapResource); /* 固定：header + owner_pid + res 指针 */
+        return NULL;
+    }
+    /* 立即数（int48 / nil / 布尔 / 符号 / pid / fnid / cfunc 下标 / 浮点）。 */
+    *nkids = 0;
+    if (raw)
+        *raw = 0;
+    if (val_is_float(src) || tag == TAG_INT || tag == TAG_NIL || tag == TAG_TRUE ||
+        tag == TAG_FALSE || tag == TAG_SYM || tag == TAG_PID || tag == TAG_CLOS_ID ||
+        tag == TAG_NATIVE)
+        return NULL;
+    ta_unknown_heap_shape("val_node_shape", tag); /* 不许静默当叶子 */
+}
+
+/* ============================================================
  * Chunk arena — the C callback's private heap (gate closed)
  *
  * While the GC gate is closed every proc_heap_alloc made by a running C
