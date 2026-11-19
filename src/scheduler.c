@@ -49,77 +49,33 @@ static void *io_poller_thread(void *arg);
 
 #define FRAG_ALIGN8(x) (((x) + 7) & ~7)
 
-/* Low-48-bit payload extractor (val.c's version is file-static). */
-static inline uint64_t frag_payload48(Val v) { return v & 0x0000FFFFFFFFFFFFULL; }
-
 /* Build a NaN-boxed pointer value (tag | low48 ptr). */
 static inline Val frag_box_ptr(uint16_t tag, void *ptr) {
     return ((uint64_t)tag << 48) | ((uint64_t)(uintptr_t)ptr & 0x0000FFFFFFFFFFFFULL);
 }
 
-/* Total bytes needed in data[] for a Val tree (each object 8-aligned). */
-typedef struct {
-    Val value;
-} FragSizeTask;
-
-static void frag_stack_grow(void **items, int *cap, int count, size_t size) {
-    if (count < *cap)
-        return;
-    int next = *cap ? *cap * 2 : 64;
-    void *grown = realloc(*items, (size_t)next * size);
-    if (!grown)
-        abort();
-    *items = grown;
-    *cap = next;
-}
-
+/* Total bytes needed in data[] for a Val tree (each object 8-aligned).
+ * 尺寸与结构都从 ta_inline.h 那一份拿（val_node_shape）：
+ * 分片布局用裸尺寸而不是 gc_obj_size —— 分片不是 GC 堆，没有「最小对象
+ * 下限」那 16 字节（空字符串在堆里占 16，在这里只占 8）。 */
 int frag_calc_size(Val root, int *has_res) {
-    FragSizeTask *tasks = NULL;
-    int count = 0, cap = 0;
-    int total = 0;
+    Val *work = NULL;
+    int n = 0, cap = 0, total = 0;
+
     if (has_res)
         *has_res = 0;
-
-    frag_stack_grow((void **)&tasks, &cap, count, sizeof(*tasks));
-    tasks[count++].value = root;
-    while (count > 0) {
-        Val v = tasks[--count].value;
-        uint16_t tag = val_tag(v);
-        if (tag == TAG_PAIR) {
-            HeapPair *src = (HeapPair *)(uintptr_t)frag_payload48(v);
-            total += FRAG_ALIGN8(sizeof(HeapPair));
-            frag_stack_grow((void **)&tasks, &cap, count, sizeof(*tasks));
-            tasks[count++].value = src->cdr;
-            frag_stack_grow((void **)&tasks, &cap, count, sizeof(*tasks));
-            tasks[count++].value = src->car;
-        } else if (tag == TAG_TUPLE) {
-            HeapTuple *t = (HeapTuple *)(uintptr_t)frag_payload48(v);
-            total += FRAG_ALIGN8(sizeof(HeapTuple) + t->len * (int)sizeof(Val));
-            for (int i = t->len - 1; i >= 0; i--) {
-                frag_stack_grow((void **)&tasks, &cap, count, sizeof(*tasks));
-                tasks[count++].value = t->slot[i];
-            }
-        } else if (tag == TAG_STRING) {
-            HeapString *s = (HeapString *)(uintptr_t)frag_payload48(v);
-            total += FRAG_ALIGN8(sizeof(HeapString) + s->len + 1);
-        } else if (tag == TAG_BYTES) {
-            HeapBytes *b = (HeapBytes *)(uintptr_t)frag_payload48(v);
-            total += FRAG_ALIGN8(sizeof(HeapBytes) + b->len);
-        } else if (tag == TAG_CLOS) {
-            HeapClosure *c = (HeapClosure *)(uintptr_t)frag_payload48(v);
-            total += FRAG_ALIGN8(sizeof(HeapClosure) + c->nfree * (int)sizeof(Val));
-            for (int i = c->nfree - 1; i >= 0; i--) {
-                frag_stack_grow((void **)&tasks, &cap, count, sizeof(*tasks));
-                tasks[count++].value = c->free[i];
-            }
-        } else if (tag == TAG_RESOURCE) {
-            /* 资源 header 固定大小；payload 在堆外，不序列化 */
-            total += FRAG_ALIGN8(sizeof(HeapResource));
-            if (has_res)
-                *has_res = 1;
-        }
+    TA_PUSH(work, n, cap, root);
+    while (n > 0) {
+        Val v = work[--n];
+        int nk, raw;
+        const Val *kids = val_node_shape(NULL, v, &nk, &raw);
+        total += FRAG_ALIGN8(raw);
+        if (val_tag(v) == TAG_RESOURCE && has_res)
+            *has_res = 1;
+        for (int i = nk - 1; i >= 0; i--)
+            TA_PUSH(work, n, cap, kids[i]);
     }
-    free(tasks);
+    free(work);
     return total;
 }
 
@@ -131,10 +87,8 @@ typedef struct {
     void *dst;
 } FragCopyTask;
 
-#define FRAG_COPY_VALUE 0
-#define FRAG_COPY_PAIR 1
-#define FRAG_COPY_CLOSURE 2
-#define FRAG_COPY_TUPLE 3
+#define FRAG_COPY_VALUE 0 /* 求值：拷 task.value 这个子值 */
+#define FRAG_COPY_NODE 1  /* 装配：把已拷好的孩子填进 task.dst 这个容器 */
 
 Val frag_copy(MsgFragment *f, Val root) {
     FragCopyTask *tasks = NULL;
@@ -142,118 +96,54 @@ Val frag_copy(MsgFragment *f, Val root) {
     int task_count = 0, task_cap = 0;
     int result_count = 0, result_cap = 0;
 
-    frag_stack_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
-    tasks[task_count++] = (FragCopyTask){FRAG_COPY_VALUE, root, NULL};
+    TA_PUSH(tasks, task_count, task_cap, ((FragCopyTask){FRAG_COPY_VALUE, root, NULL}));
     while (task_count > 0) {
         FragCopyTask task = tasks[--task_count];
-        uint16_t tag = val_tag(task.value);
-        if (task.kind == FRAG_COPY_PAIR) {
-            Val cdr = results[--result_count];
-            Val car = results[--result_count];
-            f->size = FRAG_ALIGN8(f->size);
-            HeapPair *dst = (HeapPair *)(f->data + f->size);
-            f->size += sizeof(HeapPair);
-            dst->hdr.type = HEAP_PAIR;
-            dst->hdr.flags = 0;
-            dst->car = car;
-            dst->cdr = cdr;
-            frag_stack_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = frag_box_ptr(TAG_PAIR, dst);
-            continue;
-        }
-        if (task.kind == FRAG_COPY_CLOSURE) {
-            HeapClosure *dst = (HeapClosure *)task.dst;
-            for (int i = dst->nfree - 1; i >= 0; i--)
-                dst->free[i] = results[--result_count];
-            frag_stack_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = frag_box_ptr(TAG_CLOS, dst);
-            continue;
-        }
-        if (task.kind == FRAG_COPY_TUPLE) {
-            HeapTuple *dst = (HeapTuple *)task.dst;
-            for (int i = dst->len - 1; i >= 0; i--)
-                dst->slot[i] = results[--result_count];
-            frag_stack_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = frag_box_ptr(TAG_TUPLE, dst);
-            continue;
-        }
-        if (tag == TAG_PAIR) {
-            HeapPair *src = (HeapPair *)(uintptr_t)frag_payload48(task.value);
-            frag_stack_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
-            tasks[task_count++] = (FragCopyTask){FRAG_COPY_PAIR, task.value, NULL};
-            frag_stack_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
-            tasks[task_count++] = (FragCopyTask){FRAG_COPY_VALUE, src->cdr, NULL};
-            frag_stack_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
-            tasks[task_count++] = (FragCopyTask){FRAG_COPY_VALUE, src->car, NULL};
-        } else if (tag == TAG_TUPLE) {
-            HeapTuple *src = (HeapTuple *)(uintptr_t)frag_payload48(task.value);
-            f->size = FRAG_ALIGN8(f->size);
-            HeapTuple *dst = (HeapTuple *)(f->data + f->size);
-            f->size += sizeof(HeapTuple) + src->len * (int)sizeof(Val);
-            dst->hdr.type = HEAP_TUPLE;
-            dst->hdr.flags = 0;
-            dst->len = src->len;
-            frag_stack_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
-            tasks[task_count++] = (FragCopyTask){FRAG_COPY_TUPLE, task.value, dst};
-            for (int i = src->len - 1; i >= 0; i--) {
-                frag_stack_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
-                tasks[task_count++] = (FragCopyTask){FRAG_COPY_VALUE, src->slot[i], NULL};
+        Val v = task.value;
+        uint16_t tag = val_tag(v);
+
+        if (task.kind == FRAG_COPY_NODE) {
+            /* 孩子已按构造顺序压在 results 上，倒序弹回同一个槽数组
+             * （pair 是 car,cdr 两个字段，tuple/closure 是 slot[]/free[]）。 */
+            void *dst = task.dst;
+            if (tag == TAG_PAIR) {
+                Val cdr = results[--result_count];
+                Val car = results[--result_count];
+                ((HeapPair *)dst)->car = car;
+                ((HeapPair *)dst)->cdr = cdr;
+            } else {
+                Val *slots =
+                    tag == TAG_TUPLE ? ((HeapTuple *)dst)->slot : ((HeapClosure *)dst)->free;
+                int nk, raw;
+                val_node_shape(NULL, v, &nk, &raw);
+                for (int i = nk - 1; i >= 0; i--)
+                    slots[i] = results[--result_count];
             }
-        } else if (tag == TAG_STRING) {
-            HeapString *src = (HeapString *)(uintptr_t)frag_payload48(task.value);
-            f->size = FRAG_ALIGN8(f->size);
-            HeapString *dst = (HeapString *)(f->data + f->size);
-            f->size += sizeof(HeapString) + src->len + 1;
-            dst->hdr.type = HEAP_STRING;
-            dst->hdr.flags = 0;
-            dst->len = src->len;
-            memcpy(dst->data, src->data, src->len);
-            dst->data[src->len] = '\0';
-            frag_stack_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = frag_box_ptr(TAG_STRING, dst);
-        } else if (tag == TAG_BYTES) {
-            HeapBytes *src = (HeapBytes *)(uintptr_t)frag_payload48(task.value);
-            f->size = FRAG_ALIGN8(f->size);
-            HeapBytes *dst = (HeapBytes *)(f->data + f->size);
-            f->size += sizeof(HeapBytes) + src->len;
-            dst->hdr.type = HEAP_BYTES;
-            dst->hdr.flags = 0;
-            dst->len = src->len;
-            memcpy(dst->data, src->data, src->len);
-            frag_stack_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = frag_box_ptr(TAG_BYTES, dst);
-        } else if (tag == TAG_CLOS) {
-            HeapClosure *src = (HeapClosure *)(uintptr_t)frag_payload48(task.value);
-            f->size = FRAG_ALIGN8(f->size);
-            HeapClosure *dst = (HeapClosure *)(f->data + f->size);
-            f->size += sizeof(HeapClosure) + src->nfree * (int)sizeof(Val);
-            dst->hdr.type = HEAP_CLOS;
-            dst->hdr.flags = 0;
-            dst->entry = src->entry;
-            dst->nfree = src->nfree;
-            frag_stack_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
-            tasks[task_count++] = (FragCopyTask){FRAG_COPY_CLOSURE, task.value, dst};
-            for (int i = src->nfree - 1; i >= 0; i--) {
-                frag_stack_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
-                tasks[task_count++] = (FragCopyTask){FRAG_COPY_VALUE, src->free[i], NULL};
-            }
-        } else if (tag == TAG_RESOURCE) {
-            /* header 拷进 fragment，归属保持不变（校验处已确认 == 发送方）；
-             * 入队成功后 mbox_deliver 再统一改写归属。payload 共享、不拷。*/
-            HeapResource *src = (HeapResource *)(uintptr_t)frag_payload48(task.value);
-            f->size = FRAG_ALIGN8(f->size);
-            HeapResource *dst = (HeapResource *)(f->data + f->size);
-            f->size += sizeof(HeapResource);
-            dst->h.type = HEAP_RESOURCE;
-            dst->h.flags = 0;
-            dst->owner_pid = src->owner_pid;
-            dst->res = src->res;
-            frag_stack_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = frag_box_ptr(TAG_RESOURCE, dst);
-        } else {
-            frag_stack_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = task.value;
+            TA_PUSH(results, result_count, result_cap, frag_box_ptr(tag, dst));
+            continue;
         }
+
+        if (!val_is_heap(v)) { /* 立即数 */
+            TA_PUSH(results, result_count, result_cap, v);
+            continue;
+        }
+        /* 落一个同尺寸的骨架（结构字段照抄，孩子槽随后由装配任务填）。 */
+        f->size = FRAG_ALIGN8(f->size);
+        void *dst = f->data + f->size;
+        int nk, raw;
+        const Val *kids = val_node_shape(dst, v, &nk, &raw);
+        f->size += raw;
+        if (kids) {
+            TA_PUSH(tasks, task_count, task_cap, ((FragCopyTask){FRAG_COPY_NODE, v, dst}));
+            for (int i = nk - 1; i >= 0; i--)
+                TA_PUSH(tasks, task_count, task_cap,
+                        ((FragCopyTask){FRAG_COPY_VALUE, kids[i], NULL}));
+            continue;
+        }
+        /* 原子对象：string/bytes 的正文随整块照抄一起过去；resource 的
+         * payload 指针指向堆外，照抄即共享（归属也照抄，保持不变 —— 校验处
+         * 已确认 == 发送方，入队成功后 mbox_deliver 再统一改写）。 */
+        TA_PUSH(results, result_count, result_cap, frag_box_ptr(tag, dst));
     }
     Val result = results[0];
     free(tasks);

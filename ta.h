@@ -1098,8 +1098,15 @@ int val_calc_heap_size(Val v);
  * ============================================================ */
 
 int gc_collect(Proc *p, int extra_room);
+/* 尺寸公式的唯一一份：单个堆对象的裸字节数（未对齐、无最小对象下限），按
+ * HeapHeader->type 分发。三处用户各自套自己的对齐 ——
+ *   gc / resource.c 空间扫描 / val_calc_heap_size → gc_obj_size（下）
+ *   消息分片布局（scheduler.c frag_calc_size）→ FRAG_ALIGN8（分片不是 GC
+ *   堆，没有最小对象下限）。
+ * 未知 type 直接 abort：步进错一拍就等于把堆读成垃圾。 */
+int gc_obj_raw_size(void *obj);
 /* 单个堆对象的完整分配大小（含 ta_heap_object_size 对齐）：GC 内部与
- * resource.c 的线性空间扫描共用同一份尺寸表（步进必须与分配一致）。 */
+ * resource.c 的线性空间扫描共用（步进必须与分配一致）。 */
 int gc_obj_size(void *obj);
 /* Convergence slow path: a collection that also promotes reachable chunk
  * objects (issue #160). Roots are the TA stack plus *extra_root (updated in
