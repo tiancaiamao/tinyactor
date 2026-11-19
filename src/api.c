@@ -44,16 +44,24 @@ static void vm_retire_buf(VM *vm, void *old_buf) {
     pthread_mutex_unlock(&vm->retired_lock);
 }
 
-/* ---- 名字哈希：symbol intern / cfunc 查找共用 ----
+/* ---- 名字哈希：symbol intern / cfunc 解析共用一份实现 ----
  *
  * 两张表原本都是线性 strcmp 扫描：编译器逐 token intern、每次 CCALL 按
  * 名解析 cfunc，代价 O(名字数 × 调用数)——采样显示占 tavm 跑自举编译
- * 器的 ~95%（旧按名 CCALL 指令同样受害）。开放寻址 + 线性探测，
- * 条目存下标（宿主数组增长时旧数组退役不释放，下标恒稳定）。
+ * 器的 ~95%（旧按名 CCALL 指令同样受害）。开放寻址 + 线性探测，条目存
+ * 下标（宿主数组增长时旧数组退役不释放，下标恒稳定）。
  *
- * 并发纪律：sym_hash 只在 sym_lock 内被查/改（vm_intern_symbol 是唯一入口）；
- * cfunc_hash 装载期建好（vm_register），运行期只读。哈希增长走
+ * 两张表只差「下标指向的名字从哪取」（name_at），探测 / 扩容 / 重名语义
+ * （先见者胜，与线性扫描 first-match 同语义）只有一份。
+ *
+ * 并发纪律：sym_index 只在 sym_lock 内被查/改（vm_intern_symbol 是唯一
+ * 入口）；cfunc_index 装载期建好（vm_register），运行期只读。哈希增长走
  * 「新建-替换-退役」，旧表在读者手里永不 free。 */
+
+typedef const char *(*NameAt)(VM *vm, int idx);
+
+static const char *sym_name_at(VM *vm, int idx) { return vm->symbols[idx]; }
+static const char *cfunc_name_at(VM *vm, int idx) { return vm->cfuncs[idx].name; }
 
 static uint32_t ta_name_hash(const char *s) {
     uint32_t h = 2166136261u; /* FNV-1a */
@@ -64,54 +72,59 @@ static uint32_t ta_name_hash(const char *s) {
     return h;
 }
 
-/* 返回命中下标，-1 = 表未建或无此名 */
-static int sym_hash_lookup(VM *vm, const char *name, uint32_t h) {
-    uint32_t mask = (uint32_t)vm->sym_hash_cap - 1;
+/* 返回命中下标，-1 = 无此名（cap 为 0 时不该被调用：调用方走线性扫描） */
+static int name_hash_lookup(const NameHash *t, VM *vm, const char *name, uint32_t h, NameAt at) {
+    uint32_t mask = (uint32_t)t->cap - 1;
     for (uint32_t i = h & mask;; i = (i + 1) & mask) {
-        int32_t e = vm->sym_hash[i];
+        int32_t e = t->slots[i];
         if (e < 0)
             return -1;
-        if (strcmp(vm->symbols[e], name) == 0)
+        if (strcmp(at(vm, e), name) == 0)
             return e;
     }
 }
 
-/* 全量重建（含 0..sym_count-1）。失败返回 -1，调用方把 cap 归零退化回
- * 线性扫描——正确性不变，只是慢。 */
-static int sym_hash_rebuild(VM *vm, int newcap) {
+/* 全量重建（含 0..count-1）。失败返回 -1，调用方把 cap 归零退化回线性
+ * 扫描——正确性不变，只是慢（slots 留着给 vm_free）。 */
+static int name_hash_rebuild(VM *vm, NameHash *t, int newcap, int count, NameAt at) {
     int32_t *nh = malloc((size_t)newcap * sizeof(int32_t));
     if (!nh)
         return -1;
     memset(nh, -1, (size_t)newcap * sizeof(int32_t));
     uint32_t mask = (uint32_t)newcap - 1;
-    for (int k = 0; k < vm->sym_count; k++) {
-        uint32_t i = ta_name_hash(vm->symbols[k]) & mask;
+    for (int k = 0; k < count; k++) {
+        uint32_t i = ta_name_hash(at(vm, k)) & mask;
         while (nh[i] >= 0)
             i = (i + 1) & mask;
         nh[i] = k;
     }
-    int32_t *old = vm->sym_hash;
-    vm->sym_hash = nh;
-    vm->sym_hash_cap = newcap;
+    int32_t *old = t->slots;
+    t->slots = nh;
+    t->cap = newcap;
     if (old)
         vm_retire_buf(vm, old); /* 读者手里可能还持有旧表，退役不 free */
     return 0;
 }
 
-/* 追加下标 idx（已先写入 vm->symbols）。载荷 0.7 触发扩容；扩容已含
- * 全量重建，无需再插。 */
-static void sym_hash_insert(VM *vm, int idx) {
-    if (vm->sym_count * 10 >= vm->sym_hash_cap * 7) {
-        if (sym_hash_rebuild(vm, vm->sym_hash_cap ? vm->sym_hash_cap * 2 : 256) == 0)
-            return;
-        vm->sym_hash_cap = 0; /* OOM：退化回线性扫描 */
-        return;
+/* 追加下标 idx（宿主数组里 count 个名字已就绪，含 idx）。载荷到 0.7 先
+ * 全量重建（重建已含 idx，不必再插）。OOM 返回 -1（表被清零）。 */
+static int name_hash_insert(VM *vm, NameHash *t, int idx, int count, NameAt at) {
+    if (t->cap == 0 || count * 10 >= t->cap * 7) {
+        if (name_hash_rebuild(vm, t, t->cap ? t->cap * 2 : 256, count, at) < 0) {
+            t->cap = 0;
+            return -1;
+        }
+        return 0;
     }
-    uint32_t mask = (uint32_t)vm->sym_hash_cap - 1;
-    uint32_t i = ta_name_hash(vm->symbols[idx]) & mask;
-    while (vm->sym_hash[i] >= 0)
+    uint32_t mask = (uint32_t)t->cap - 1;
+    uint32_t i = ta_name_hash(at(vm, idx)) & mask;
+    while (t->slots[i] >= 0) {
+        if (strcmp(at(vm, t->slots[i]), at(vm, idx)) == 0)
+            return 0; /* 重名：先见者胜 */
         i = (i + 1) & mask;
-    vm->sym_hash[i] = idx;
+    }
+    t->slots[i] = idx;
+    return 0;
 }
 
 int vm_intern_symbol(VM *vm, const char *name) {
@@ -122,8 +135,8 @@ int vm_intern_symbol(VM *vm, const char *name) {
      * corruption under multi-worker builds). */
     pthread_mutex_lock(&vm->sym_lock);
     uint32_t h = ta_name_hash(name);
-    if (vm->sym_hash_cap > 0) {
-        int hit = sym_hash_lookup(vm, name, h);
+    if (vm->sym_index.cap > 0) {
+        int hit = name_hash_lookup(&vm->sym_index, vm, name, h, sym_name_at);
         if (hit >= 0) {
             pthread_mutex_unlock(&vm->sym_lock);
             return hit;
@@ -154,7 +167,7 @@ int vm_intern_symbol(VM *vm, const char *name) {
     }
     vm->symbols[vm->sym_count] = strdup(name);
     int idx = vm->sym_count++;
-    sym_hash_insert(vm, idx);
+    name_hash_insert(vm, &vm->sym_index, idx, vm->sym_count, sym_name_at);
     pthread_mutex_unlock(&vm->sym_lock);
     return idx;
 }
@@ -330,8 +343,8 @@ void vm_free(VM *vm) {
     for (int i = 0; i < vm->sym_count; i++)
         free(vm->symbols[i]);
     free(vm->symbols);
-    free(vm->sym_hash);
-    free(vm->cfunc_hash);
+    free(vm->sym_index.slots);
+    free(vm->cfunc_index.slots);
     free(vm->runq);
     if (vm->wake_pipe_r >= 0)
         close(vm->wake_pipe_r);
@@ -360,41 +373,6 @@ static Val cfunc_print(VM *vm, Val *args, int nargs) {
     return val_nil();
 }
 
-/* cfunc 名字哈希：MAX_CFUNCS 有界（128），一次建表 512 槽（载荷上限
- * ~358），此后只插不扩。重名保首见——与线性扫描 first-match 同语义。 */
-static int cfunc_hash_lookup(VM *vm, const char *name, uint32_t h) {
-    uint32_t mask = (uint32_t)vm->cfunc_hash_cap - 1;
-    for (uint32_t i = h & mask;; i = (i + 1) & mask) {
-        int32_t e = vm->cfunc_hash[i];
-        if (e < 0)
-            return -1;
-        if (strcmp(vm->cfuncs[e].name, name) == 0)
-            return e;
-    }
-}
-
-static void cfunc_hash_insert(VM *vm, int idx) {
-    if (vm->cfunc_hash_cap == 0) {
-        int32_t *nh = malloc(512 * sizeof(int32_t));
-        if (!nh)
-            return; /* 无哈希：vm_find_cfunc 走线性扫描，正确性不变 */
-        memset(nh, -1, 512 * sizeof(int32_t));
-        int32_t *old = vm->cfunc_hash;
-        vm->cfunc_hash = nh;
-        vm->cfunc_hash_cap = 512;
-        if (old)
-            vm_retire_buf(vm, old);
-    }
-    uint32_t mask = (uint32_t)vm->cfunc_hash_cap - 1;
-    uint32_t i = ta_name_hash(vm->cfuncs[idx].name) & mask;
-    while (vm->cfunc_hash[i] >= 0) {
-        if (strcmp(vm->cfuncs[vm->cfunc_hash[i]].name, vm->cfuncs[idx].name) == 0)
-            return; /* 重名：先见者胜，线性扫描同款 */
-        i = (i + 1) & mask;
-    }
-    vm->cfunc_hash[i] = idx;
-}
-
 void vm_register(VM *vm, const char *name, Val (*fn)(VM *vm, Val *args, int nargs), int nargs) {
     if (vm->cfunc_count >= MAX_CFUNCS)
         return;
@@ -404,7 +382,8 @@ void vm_register(VM *vm, const char *name, Val (*fn)(VM *vm, Val *args, int narg
     vm->cfuncs[vm->cfunc_count].name = dup;
     vm->cfuncs[vm->cfunc_count].fn = fn;
     vm->cfuncs[vm->cfunc_count].nargs = nargs;
-    cfunc_hash_insert(vm, vm->cfunc_count); /* 先进哈希，后发布 count */
+    /* 先进哈希，后发布 count（哈希条目先可见，读到的 cfuncs[idx] 已填好） */
+    name_hash_insert(vm, &vm->cfunc_index, vm->cfunc_count, vm->cfunc_count + 1, cfunc_name_at);
     vm->cfunc_count++;
 }
 
@@ -465,8 +444,8 @@ int vm_host_module_registered(VM *vm, const char *mod, int mod_len) {
 /* Find a C function by qualified name (e.g. "http.parse_request").
  * Returns cfunc index or -1 if not found. */
 int vm_find_cfunc(VM *vm, const char *name) {
-    if (vm->cfunc_hash_cap > 0)
-        return cfunc_hash_lookup(vm, name, ta_name_hash(name));
+    if (vm->cfunc_index.cap > 0)
+        return name_hash_lookup(&vm->cfunc_index, vm, name, ta_name_hash(name), cfunc_name_at);
     for (int i = 0; i < vm->cfunc_count; i++) {
         if (strcmp(vm->cfuncs[i].name, name) == 0)
             return i;
