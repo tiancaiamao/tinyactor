@@ -66,12 +66,19 @@ Val cfunc_recv(VM *vm, Proc *p, Val *a, int n) {
     return mbox_pop_cfunc(p);
 }
 
+/* 收掉 recv_after 的 deadline 并把它从 recv_armed 计数里摘出来 —— 三个
+ * 出口（上轮已过期 / 本轮拿到消息 / 本轮超时）都要做，漏一处 poller 就
+ * 永远为一个死 deadline 空转。 */
+static void recv_disarm(VM *vm, Proc *p) {
+    atomic_store(&p->recv_deadline_ms, -1);
+    atomic_fetch_sub(&vm->recv_armed, 1);
+}
+
 Val cfunc_recv_after(VM *vm, Proc *p, Val *a, int n) {
     (void)n;
 
     if (atomic_load(&p->recv_deadline_ms) == RECV_AFTER_EXPIRED) {
-        atomic_store(&p->recv_deadline_ms, -1);
-        atomic_fetch_sub(&vm->recv_armed, 1);
+        recv_disarm(vm, p);
         return val_nil();
     }
     if (atomic_load(&p->recv_deadline_ms) < 0) {
@@ -82,14 +89,12 @@ Val cfunc_recv_after(VM *vm, Proc *p, Val *a, int n) {
     pthread_mutex_lock(&p->mbox_lock);
     if (p->mbox_count > 0) {
         pthread_mutex_unlock(&p->mbox_lock);
-        atomic_store(&p->recv_deadline_ms, -1);
-        atomic_fetch_sub(&vm->recv_armed, 1);
+        recv_disarm(vm, p);
         return mbox_pop_cfunc(p);
     }
     if (mono_now_ms() >= atomic_load(&p->recv_deadline_ms)) {
         pthread_mutex_unlock(&p->mbox_lock);
-        atomic_store(&p->recv_deadline_ms, -1);
-        atomic_fetch_sub(&vm->recv_armed, 1);
+        recv_disarm(vm, p);
         vm_wait_unregister(vm, p);
         return val_nil();
     }
@@ -131,23 +136,20 @@ Val cfunc_recv_commit(VM *vm, Proc *p, Val *a, int n) {
     (void)n;
     int target = p->peek_index - 1;
     pthread_mutex_lock(&p->mbox_lock);
+    MsgFragment *frag;
     if (target == 0) {
-        MsgFragment *frag = p->mbox_frag_head;
-        p->mbox_frag_head = frag->next;
-        if (!p->mbox_frag_head)
-            p->mbox_frag_tail = NULL;
-        free(frag);
+        frag = mbox_detach_head_locked(p); /* 顺带维护 tail / count */
     } else {
         MsgFragment *prev = p->mbox_frag_head;
         for (int i = 0; i < target - 1; i++)
             prev = prev->next;
-        MsgFragment *frag = prev->next;
+        frag = prev->next;
         prev->next = frag->next;
         if (frag == p->mbox_frag_tail)
             p->mbox_frag_tail = prev;
-        free(frag);
+        p->mbox_count--;
     }
-    p->mbox_count--;
+    free(frag);
     p->peek_index = 0;
     pthread_mutex_unlock(&p->mbox_lock);
     return val_nil();
