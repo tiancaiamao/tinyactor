@@ -1,9 +1,8 @@
-/* host.c — 两个宿主（字节码 src/main.c、C 后端 lib/native/rt.c）共用的初始化。
+/* host.c — 字节码宿主 src/main.c 的初始化。
  *
  * 这里只有一件事是必须共用的：裸名谓词 cfunc 的清单。它是 compile.ta
  * `bare_cfunc` 白名单的宿主侧契约 —— 白名单里的名字编译成按名 ccall，
- * 宿主漏注册就炸在装载期（link_unit 的 fatal_unknown_cfunc）。表只有一份，
- * 两种后端才不可能对"float? 到底存不存在"产生分歧。
+ * 宿主漏注册就炸在装载期（link_unit 的 fatal_unknown_cfunc）。
  */
 #include "host.h"
 

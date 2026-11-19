@@ -1,7 +1,7 @@
 #!/bin/bash
 # run_module_gate.sh — kernel 自足纪律门（kl-kernel 步 1）。
 #
-# 每个 lib/*.ta、lib/bootstrap/*.ta 与 lib/native/*.ta 单元过两半检查：
+# 每个 lib/*.ta、lib/bootstrap/*.ta 单元过两半检查：
 #
 #   A. 独立 build：`tinyactor build <unit> <out>`，每个单元用**全新**的
 #      sig-cache 目录（TA_SIG_CACHE_DIR）。新缓存是承重的：typecheck_cached
@@ -52,7 +52,7 @@ check_unit() {
 }
 
 # ---- A. 逐单元独立 build（冷 sig-cache）----
-units=(lib/*.ta lib/bootstrap/*.ta lib/native/*.ta)
+units=(lib/*.ta lib/bootstrap/*.ta)
 pool_run "$(test_jobs)" "$OUT" check_unit "${units[@]}"
 total=${#units[@]}
 for i in "${!units[@]}"; do

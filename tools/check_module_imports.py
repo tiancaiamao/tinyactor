@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """check_module_imports.py — module-gate half B: direct-declaration scan.
 
-Every dotted module reference `M.f(...)` in a lib/*.ta / lib/bootstrap/*.ta /
-lib/native/*.ta unit must be covered by that unit's OWN declarations:
+Every dotted module reference `M.f(...)` in a lib/*.ta / lib/bootstrap/*.ta
+unit must be covered by that unit's OWN declarations:
   * `import M` in the same file, or
   * `external fn M.g(...)` in the same file (lazy-dylib C signature layer,
     e.g. fs.ta's file.stat), or
@@ -75,7 +75,6 @@ def main():
     files = (
         sorted(glob.glob("lib/*.ta"))
         + sorted(glob.glob("lib/bootstrap/*.ta"))
-        + sorted(glob.glob("lib/native/*.ta"))
     )
     for path in files:
         raw = open(path).read()

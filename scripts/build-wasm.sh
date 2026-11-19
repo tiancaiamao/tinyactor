@@ -122,7 +122,7 @@ fi
 # --- 2. Emscripten build ---------------------------------------------------
 # VM sources = all of src/*.c except main.c (it has main();
 # it is linked explicitly below, exactly once). src/ holds nothing but the
-# bytecode VM runtime since the native backend moved to lib/native/ (#458).
+# bytecode VM runtime (src/ holds only the VM runtime).
 VM_SRCS=()
 for f in "$REPO_ROOT"/src/*.c; do
     [ "$f" = "$REPO_ROOT/src/main.c" ] && continue

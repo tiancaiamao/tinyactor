@@ -92,7 +92,7 @@ check_unit() {
   fi
 }
 
-units=(lib/bootstrap/driver.ta lib/*.ta lib/bootstrap/*.ta lib/native/*.ta)
+units=(lib/bootstrap/driver.ta lib/*.ta lib/bootstrap/*.ta)
 pool_run "$(test_jobs)" "$OUT" check_unit "${units[@]}"
 
 fail=0
