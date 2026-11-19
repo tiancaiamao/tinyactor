@@ -268,7 +268,6 @@ void vm_free(VM *vm) {
     while (r) {
         Proc *nx = r->next_retired;
         pthread_mutex_destroy(&r->mbox_lock);
-        vm_free_proc_tokvecs(r); /* no-op if freed in proc_die */
         free(r->watchers);
         free(r->watcher_refs);
         free(r);
@@ -290,7 +289,6 @@ void vm_free(VM *vm) {
             frag = nx;
         }
         pthread_mutex_destroy(&p->mbox_lock);
-        vm_free_proc_tokvecs(p);
         /* 活堆兑底（§6.3）：同 proc_die，全堆都是垃圾 */
         if (p->mem)
             resource_release_space(p->mem, p->heap_ptr, p->pid, 0);
@@ -623,32 +621,22 @@ typedef struct {
     char *str;
 } TokEntry;
 
-typedef struct TokVec {
-    struct TokVec *next; /* owner proc's registry list (Proc.tok_vecs) */
-    int id;              /* handle handed to TA */
+typedef struct {
     int len;
     TokEntry *entries;
 } TokVec;
 
-/* Token vectors are owned by the Proc that creates them (issue #121): the
- * registry is Proc.tok_vecs, a per-proc list. The builtins below always run
- * via do_ccall (the LOP_CALL TAG_NATIVE path in vm.c), where tls_current_proc
- * is set. Handles are opaque to TA and invalid across procs — a handle that
- * was never issued (or already freed) simply resolves to nothing. */
-static TokVec *tok_find(Proc *p, Val handle) {
-    int id = (int)val_get_int(handle);
-    for (TokVec *v = p->tok_vecs; v; v = v->next)
-        if (v->id == id)
-            return v;
-    return NULL;
-}
-
-static void tok_unlink(Proc *p, TokVec *vec) {
-    TokVec **link = &p->tok_vecs;
-    while (*link && *link != vec)
-        link = &(*link)->next;
-    if (*link)
-        *link = vec->next;
+/* 句柄是 Resource（src/resource.c，issue #401）：payload 在堆外，GC 只看
+ * 得到一个固定大小的 header；归属校验、随 send 移交、close 确定性释放、
+ * GC / proc_die / teardown 三重兜底全是资源机制自带的。这里因此不再有
+ * per-proc registry、id 与释放钩子 —— 原先那套（Proc.tok_vecs 链表 +
+ * 线性查找 + proc_die/vm_free 两处清理）就是资源机制的又一份实现。 */
+static void tokvec_dtor(void *ptr) {
+    TokVec *v = ptr;
+    for (int i = 0; i < v->len; i++)
+        free(v->entries[i].str);
+    free(v->entries);
+    free(v);
 }
 
 /* tok_kind_of_ctor — Token 变体的构造器符号 → 解析器用的裸标签下标。
@@ -680,7 +668,7 @@ static int tok_kind_of_ctor(VM *vm, int ctor_idx) {
 static Val vm_make_tok_vec_fn(VM *vm, Val *args, int nargs) {
     Proc *p = tls_current_proc;
     if (!p || !val_is_pair(args[0]))
-        return val_int(-1);
+        return val_nil();
 
     Val cur = args[0];
     int len = 0;
@@ -689,10 +677,13 @@ static Val vm_make_tok_vec_fn(VM *vm, Val *args, int nargs) {
         cur = val_get_cdr(cur);
     }
 
-    TokVec *vec = calloc(1, sizeof(TokVec));
-    vec->id = p->tok_next_id++;
+    TokVec *vec = malloc(sizeof(TokVec));
+    if (!vec)
+        abort(); /* 与其它堆构造子同款：OOM 直接 abort */
     vec->len = len;
     vec->entries = calloc((size_t)len, sizeof(TokEntry));
+    if (!vec->entries)
+        abort();
 
     cur = args[0];
     for (int i = 0; i < len; i++) {
@@ -721,19 +712,15 @@ static Val vm_make_tok_vec_fn(VM *vm, Val *args, int nargs) {
         }
         cur = val_get_cdr(cur);
     }
-    vec->next = p->tok_vecs;
-    p->tok_vecs = vec;
-    return val_int(vec->id);
+    return ta_resource_new(p, vec, tokvec_dtor);
 }
 
 static Val vm_tok_type_fn(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
-    if (!p)
-        return val_nil();
-    TokVec *vec = tok_find(p, args[0]);
+    HeapResource *r;
+    if (ta_resource_open(args[0], &r, -1) != 0)
+        return val_nil(); /* 错型 / 已随投递移交 / 已释放 */
+    TokVec *vec = r->res->ptr;
     int pos = (int)val_get_int(args[1]);
-    if (!vec)
-        return val_nil();
     if (pos < 0 || pos >= vec->len) {
         return val_symbol((uint32_t)vm_intern_symbol(vm, "eof"));
     }
@@ -741,13 +728,11 @@ static Val vm_tok_type_fn(VM *vm, Val *args, int nargs) {
 }
 
 static Val vm_tok_val_fn(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
-    if (!p)
+    HeapResource *r;
+    if (ta_resource_open(args[0], &r, -1) != 0)
         return val_nil();
-    TokVec *vec = tok_find(p, args[0]);
+    TokVec *vec = r->res->ptr;
     int pos = (int)val_get_int(args[1]);
-    if (!vec)
-        return val_nil();
     if (pos < 0 || pos >= vec->len)
         return val_nil();
     TokEntry *e = &vec->entries[pos];
@@ -762,45 +747,22 @@ static Val vm_tok_val_fn(VM *vm, Val *args, int nargs) {
 }
 
 static Val vm_tok_at_fn(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
-    if (!p)
+    HeapResource *r;
+    if (ta_resource_open(args[0], &r, -1) != 0)
         return val_int(0);
-    TokVec *vec = tok_find(p, args[0]);
+    TokVec *vec = r->res->ptr;
     int pos = (int)val_get_int(args[1]);
-    if (!vec || pos < 0 || pos >= vec->len)
+    if (pos < 0 || pos >= vec->len)
         return val_int(0); /* out of range: 0 == "start of file" */
     return val_int(vec->entries[pos].at);
 }
 
 static Val vm_free_tok_vec_fn(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
-    if (!p)
-        return val_nil();
-    TokVec *vec = tok_find(p, args[0]);
-    if (!vec)
-        return val_nil();
-    for (int i = 0; i < vec->len; i++)
-        free(vec->entries[i].str);
-    free(vec->entries);
-    tok_unlink(p, vec);
-    free(vec);
+    HeapResource *r;
+    if (ta_resource_open(args[0], &r, 1) != 0)
+        return val_nil();   /* 错型 / 已移交：没有可释放的 */
+    ta_resource_release(r); /* 已释放时是 no-op：重复 close 幂等 */
     return val_nil();
-}
-
-/* Free every token vector owned by p. Called from proc_die (per-proc
- * ownership also fixes the leak: the old global table kept vectors alive
- * until vm_free) and from vm_free for procs that never hit proc_die. */
-void vm_free_proc_tokvecs(Proc *p) {
-    TokVec *vec = p->tok_vecs;
-    while (vec) {
-        TokVec *next = vec->next;
-        for (int i = 0; i < vec->len; i++)
-            free(vec->entries[i].str);
-        free(vec->entries);
-        free(vec);
-        vec = next;
-    }
-    p->tok_vecs = NULL;
 }
 
 /* vm.time_ms() -> int — monotonic clock in milliseconds (rate limiting etc). */

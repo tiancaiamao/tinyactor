@@ -685,10 +685,6 @@ void proc_die(VM *vm, Proc *p, Val reason) {
     proc_gc_leave(p);
     pthread_mutex_unlock(&vm->procs_lock);
 
-    /* Free token vectors owned by this proc (ids are per-proc and opaque,
-     * so no other thread can reference them once p is dead). */
-    vm_free_proc_tokvecs(p);
-
     /* Free all undelivered mailbox fragments；其中的资源归属是死者 →
      * 先兑底释放（§6.3），与并发发送方由同一把 mbox_lock 串行。 */
     pthread_mutex_lock(&p->mbox_lock);

@@ -227,9 +227,6 @@ typedef struct {
 
 typedef enum { PROC_RUNNING, PROC_WAIT_RECV, PROC_WAIT_IO, PROC_DEAD } ProcState;
 
-/* Token vector owned by a Proc (Proc.tok_vecs list; defined in src/api.c). */
-struct TokVec;
-
 /* The C-callback arena (issue #160): the bump allocator a running C module's
  * allocations land in while the GC gate is closed, so the managed heap stays
  * frozen and nothing needs rooting. It is opened by do_ccall in its own frame
@@ -338,15 +335,6 @@ typedef struct Proc {
     int *watchers;
     Val *watcher_refs;
     int watcher_count, watcher_cap;
-
-    /* Token-vector registry (vm.make_tok_vec / vm.tok_type / vm.tok_val /
-     * vm.free_tok_vec). Per-proc since #121: the old process-wide table in
-     * api.c was not thread-safe and leaked on proc death. Handles are opaque
-     * ints, only meaningful within the owning proc. The vectors form a linked
-     * list instead of a fixed slot table: an actor that never tokenizes pays
-     * one pointer, and nothing caps how many vectors one may hold. */
-    struct TokVec *tok_vecs;
-    int tok_next_id; /* next handle to hand out (monotonic; never reused) */
 
     /* net module (src/net.c): last hard-failure errno of this proc, read
      * back by net.errno(). Per-proc, not thread-local: a proc that yields
@@ -949,9 +937,6 @@ int vm_intern_symbol(VM *vm, const char *name);
  * 字符串由 VM 拥有（strdup 后不再移动），解锁后指针仍有效。 */
 const char *vm_symbol_name(VM *vm, uint32_t idx);
 
-/* api.c — free every token vector owned by p (proc_die cleanup; also
- * called from vm_free for procs that never went through proc_die). */
-void vm_free_proc_tokvecs(Proc *p);
 Val val_pid(uint32_t pid);
 
 /* heap-allocated constructors (require process context) */
