@@ -475,8 +475,10 @@ $(TIMER_MODS): lib/timer.c $(HDRS)
 $(INT_MODS): lib/int.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
+# -lm：float.c 用 trunc / fmod（libm 符号），Linux 上 dlopen(RTLD_NOW) 时
+# 必须有直接依赖才解析得出来——macOS 靠 libSystem 顺带导出，看不出来。
 $(FLOAT_MODS): lib/float.c $(HDRS)
-	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
+	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< -lm $(MOD_LDLIBS)
 
 # cov module — lazy dylib like net, no reverse edge at all (the poller
 # never touches it); cov_dump_env died with the move (no caller).

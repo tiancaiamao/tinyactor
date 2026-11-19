@@ -3,9 +3,14 @@ name: Playground
 # Playground 的 wasm 产物不入库（docs/wasm/ 是构建输出），由这里现编：
 #
 #   1. build  — emcc 编 wasm + 跑课程门（native 与 wasm 双路）+ Jekyll 建站
-#               + 上传 Pages artifact。pull_request 也跑（不部署），这样 wasm
-#               在合并前就验过——它以前是入库产物，靠人记得重编，烂过一个月。
-#   2. deploy — 只在 main 上部署到 GitHub Pages。
+#               + 上传 Pages artifact。
+#   2. deploy — 部署到 GitHub Pages。
+#
+# **只在 main 上跑，不在 pull_request 上跑**：这套要多下一个 emsdk 再全量
+# 编 wasm，几十秒到几分钟，压在 PR 上不值——PR 的门是 `make test`（native 路
+# 的课程门在里面）。wasm 路万一编坏，main 上这里会红、且部署不成功时站点
+# 保持上一次部署，不会把线上搞挂。要提前验就在分支上 `make wasm &
+# node scripts/verify-lessons.mjs` 或 merge 前手动 dispatch。
 #
 # 触发范围就是「会影响站点的东西」：文档、VM 源码、C 模块、编译期种子、构建脚本。
 # 注意 Pages 的发布方式必须是 "GitHub Actions"（不是 legacy 的 main:/docs）；
@@ -24,22 +29,12 @@ on:
       - 'scripts/verify-lessons.mjs'
       - 'Makefile'
       - '.github/workflows/pages.yml'
-  pull_request:
-    paths:
-      - 'docs/**'
-      - 'src/**'
-      - 'include/**'
-      - 'lib/**'
-      - 'scripts/build-wasm.sh'
-      - 'scripts/verify-lessons.mjs'
-      - 'Makefile'
-      - '.github/workflows/pages.yml'
   workflow_dispatch:
 
 concurrency:
   group: pages-${{ github.ref }}
-  # PR 上的旧跑作废；main 上不取消，别把正在进行的部署掐掉
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # 不取消正在进行的部署
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -98,7 +93,6 @@ jobs:
 
   deploy:
     needs: build
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
