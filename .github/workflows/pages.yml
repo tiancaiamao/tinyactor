@@ -68,10 +68,13 @@ jobs:
           ~/emsdk/emsdk activate latest
           echo "$HOME/emsdk/upstream/emscripten" >> "$GITHUB_PATH"
 
-      # build-wasm.sh 要 ./tavm 预编译 hello.tabc，并要 lib/* 现成的模块 .so
+      # build-wasm.sh 要 ./tavm 预编译 hello.tabc，并要 lib/* 现成的模块 .so。
+      # lib/bootstrap.tabc 也显式建：checkout 出来的 mtime 顺序会让种子"看起来"
+      # 比 driver.ta 旧，而种子的重建归 Makefile 这条规则（make bootstrap），
+      # 不该由 tinyactor 运行期的自重建路径代劳。
       - name: Build VM
         run: |
-          make -j"$(nproc)" all
+          make -j"$(nproc)" all lib/bootstrap.tabc
           emcc --version | head -1
 
       - name: Build wasm
@@ -88,6 +91,17 @@ jobs:
         with:
           source: ./docs
           destination: ./_site
+
+      # 临时诊断：native 路失败时看种子重建到底卡在哪（定位完就删）
+      - name: Debug seed rebuild
+        if: failure()
+        run: |
+          set -x
+          SCRIPT_DIR=$PWD
+          mktemp "$SCRIPT_DIR/lib/.bootstrap.XXXXXX"; echo "mktemp rc=$?"
+          touch lib/bootstrap/driver.ta
+          ./tinyactor run build/tour-check/hello-tinyactor.ta; echo "tinyactor rc=$?"
+          ls -l lib/bootstrap.tabc lib/bootstrap/driver.ta
 
       - uses: actions/upload-pages-artifact@v3
         with:
