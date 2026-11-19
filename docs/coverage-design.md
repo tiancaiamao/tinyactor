@@ -38,7 +38,8 @@ the line, and "entered but not completed" is the valuable third state.
 - The AST **is data** (S-expression shape) and survives until codegen →
   instrumentation is a plain AST→AST tree walk (cloverage school).
 - The typechecker resolves unknown qualified calls on registered C
-  modules permissively, and codegen compiles them as `OP_CCALL_NAME` →
+  modules permissively, and codegen emits the generic `CALL` (a registered
+  C module name resolves to a cfunc index at link time) →
   an injected `(cov.hit k)` needs **no typecheck, codegen or VM change**.
 - `resolve_loop` treats `import <registered-name>` as builtin and does
   **not** load a TA module of that name — so the instrumenter module must

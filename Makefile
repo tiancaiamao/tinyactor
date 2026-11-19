@@ -641,6 +641,12 @@ test-cli: $(TEST_DEPS)
 test-unit-gate: $(TEST_DEPS)
 	@bash test/run_module_gate.sh
 
+# opcode 编号镜像门：compile.ta 的 OP_*（权威）与 ta.h 的 LOP_*（C 侧镜像）
+# 必须同号同名，退休槽必须具名（tools/check_opcode_mirrors.py）。纯文本检查，
+# 秒级、双 OS 都跑 —— 放 test 链，漏改一边当天红。
+test-opcode-mirror:
+	@python3 tools/check_opcode_mirrors.py
+
 # 步 2 逐模块 .kl + 链接门：链接 == 整 .kl 逐字节 + --from-kl 闭环。
 # 同样放 test 链（结构/接缝门，双 OS 都该看守；backend-gate 留给重语义门）。
 test-kl-link: $(TEST_DEPS)
@@ -687,7 +693,7 @@ wasm: $(TEST_DEPS)
 #                  默认核数封顶 8）。coverage-ta 这类在 recipe 里跑 test 的地方
 #                  就是这条路，别处也可以不用 -j。
 # TEST_JOBS=1 退回完全串行——定位单个用例或怀疑并发交互时用。
-test: test-basic test-gc test-actor test-module test-compiler test-example test-cli test-unit-gate test-kl-link test-kl-sem test-fmt-guard test-tour
+test: test-basic test-gc test-actor test-module test-compiler test-example test-cli test-unit-gate test-opcode-mirror test-kl-link test-kl-sem test-fmt-guard test-tour
 
 # ============================================================
 # Coverage targets
