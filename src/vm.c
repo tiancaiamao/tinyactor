@@ -29,8 +29,7 @@ void vm_yield(VM *vm, Proc *p) {
     /* Per-proc flag: multiple worker threads share one VM and call C
      * functions concurrently; a shared flag on VM would race across
      * threads (a spurious yield in one proc, or a lost yield in another). */
-    if (p)
-        p->cfunc_yield = TA_YIELD_IO;
+    p->cfunc_yield = TA_YIELD_IO;
 }
 
 void vm_yield_recv(VM *vm, Proc *p) {
@@ -38,8 +37,7 @@ void vm_yield_recv(VM *vm, Proc *p) {
      * yield is published by do_ccall under that same lock: it writes the
      * resume point, sets PROC_WAIT_RECV, registers the waiter and unlocks.
      * Setting state here would let mbox_deliver wake before pc/sp land. */
-    if (p)
-        p->cfunc_yield = TA_YIELD_RECV;
+    p->cfunc_yield = TA_YIELD_RECV;
 }
 
 /* ================================================================

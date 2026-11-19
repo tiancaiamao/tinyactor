@@ -638,7 +638,7 @@ static int tok_kind_of_ctor(VM *vm, int ctor_idx) {
 }
 
 static Val vm_make_tok_vec_fn(VM *vm, Proc *p, Val *args, int nargs) {
-    if (!p || !val_is_pair(args[0]))
+    if (!val_is_pair(args[0]))
         return val_nil();
 
     Val cur = args[0];
@@ -687,8 +687,9 @@ static Val vm_make_tok_vec_fn(VM *vm, Proc *p, Val *args, int nargs) {
 }
 
 /* tok_type / tok_val / tok_at 共同的前奏：开句柄、取 TokVec、取下标。
- * 打不开（错型 / 已随投递移交 / 已释放）或越界都返回 NULL，兜底值各自由
- * 调用方给（'eof / nil / 0）。 */
+ * 「打不开」（错型 / 已随投递移交 / 已释放）与「越界」都返回 NULL —— 两者对
+ * 调用方是同一件事（这个下标上没有 token），兜底值各自给（'eof / nil / 0）。
+ * 越界检查必须在这一份里：三个调用方都直接 vec->entries[pos] 取值。 */
 static TokVec *tok_lookup(Proc *p, Val *args, int *pos) {
     HeapResource *r;
     if (ta_resource_open(args[0], p, &r, -1) != 0)
