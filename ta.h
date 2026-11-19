@@ -534,6 +534,14 @@ enum {
  * while a proc executes. */
 extern __thread Proc *tls_current_proc;
 
+/* 名字 → 下标的开放寻址表（线性探测；条目存宿主数组下标，-1 = 空；
+ * cap 是 2 的幂，0 = 未建 —— OOM 时退化回线性扫描，正确性不变只是慢）。
+ * 实现只有一份（api.c）：symbol intern 与 cfunc 按名解析共用。 */
+typedef struct {
+    int32_t *slots;
+    int cap;
+} NameHash;
+
 struct VM {
     Proc **procs;
     int procs_count, procs_cap;
@@ -585,11 +593,10 @@ struct VM {
      * bumped before the new name pointer is visible. */
     char **symbols;
     int sym_count, sym_cap;
-    /* 名字哈希（开放寻址，条目存下标；-1 空）：intern 的 O(1) 路径。
-     * 编译器工作负载逐 token intern，线性 strcmp 扫描曾占编译期 ~90%。
-     * 增长走「新建-替换-退役」——读者持有的旧表始终完整有效。 */
-    int32_t *sym_hash;
-    int sym_hash_cap; /* 2 的幂；0 = 未建（OOM 退化回线性扫描） */
+    /* intern 的 O(1) 路径（编译器逐 token intern，线性 strcmp 扫描曾占
+     * 编译期 ~90%）。增长走「新建-替换-退役」——读者持有的旧表始终完整
+     * 有效。 */
+    NameHash sym_index;
 
     /* C function registry */
     struct {
@@ -598,11 +605,9 @@ struct VM {
         int nargs;
     } cfuncs[MAX_CFUNCS];
     int cfunc_count;
-    /* 同上：cfunc 按名解析的 O(1) 路径（每次 CCALL 都要解析）。重名保
-     * 首见，与线性扫描 first-match 同语义。MAX_CFUNCS 有界，建表后不再
-     * 扩容。 */
-    int32_t *cfunc_hash;
-    int cfunc_hash_cap; /* 2 的幂；0 = 未建 */
+    /* cfunc 按名解析的 O(1) 路径（每次 CCALL 都要解析）：与 sym_index
+     * 同一份实现、同一套语义（重名保首见 = 线性扫描 first-match）。 */
+    NameHash cfunc_index;
 
     /* Module registry */
     TaFunc **mod_funcs; /* per-module function arrays */
@@ -1078,8 +1083,15 @@ int val_calc_heap_size(Val v);
  * ============================================================ */
 
 int gc_collect(Proc *p, int extra_room);
+/* 尺寸公式的唯一一份：单个堆对象的裸字节数（未对齐、无最小对象下限），按
+ * HeapHeader->type 分发。三处用户各自套自己的对齐 ——
+ *   gc / resource.c 空间扫描 / val_calc_heap_size → gc_obj_size（下）
+ *   消息分片布局（scheduler.c frag_calc_size）→ FRAG_ALIGN8（分片不是 GC
+ *   堆，没有最小对象下限）。
+ * 未知 type 直接 abort：步进错一拍就等于把堆读成垃圾。 */
+int gc_obj_raw_size(void *obj);
 /* 单个堆对象的完整分配大小（含 ta_heap_object_size 对齐）：GC 内部与
- * resource.c 的线性空间扫描共用同一份尺寸表（步进必须与分配一致）。 */
+ * resource.c 的线性空间扫描共用（步进必须与分配一致）。 */
 int gc_obj_size(void *obj);
 /* Convergence slow path: a collection that also promotes reachable chunk
  * objects (issue #160). Roots are the TA stack plus *extra_root (updated in

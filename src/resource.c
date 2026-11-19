@@ -95,59 +95,27 @@ int ta_resource_open(Val v, HeapResource **out, int closed_code) {
 /* ================================================================
  * 树遍历：收集树里全部 HEAP_RESOURCE header
  *
- * 显式工作表递归（pair 下钻 car/cdr、closure 下钻 free[]、tuple 下钻 slot[]），不走 C 递归
- * —— 消息树的深度无上界。工作表与结果数组 malloc，调用方负责 free。
+ * 显式工作表（ta_inline.h 的 val_kid* 驱动，不走 C 递归 —— 消息树的深度
+ * 无上界），工作表与结果数组 malloc，调用方负责 free。
  * collect_resources 是下面全部操作的公共走法；每消息资源数很小，重复
  * 收集（校验一遍、改写一遍）换来的是每个函数各自独立可读。
  * ================================================================ */
 
-/* 工作表扩容：need = 本次要写入的元素数（栈已用 wn）。 */
-static void work_reserve(Val **work, int *wcap, int wn, int need) {
-    if (wn + need <= *wcap)
-        return;
-    while (wn + need > *wcap)
-        *wcap *= 2;
-    *work = realloc(*work, (size_t)*wcap * sizeof(Val));
-    if (!*work)
-        abort();
-}
-
 static HeapResource **collect_resources(Val root, int *count_out) {
     HeapResource **found = NULL;
     int n = 0, cap = 0;
-    Val *work = malloc(sizeof(Val));
-    int wn = 0, wcap = 1;
-    if (!work)
-        abort();
-    work[wn++] = root;
+    Val *work = NULL;
+    int wn = 0, wcap = 0;
 
+    TA_PUSH(work, wn, wcap, root);
     while (wn > 0) {
         Val v = work[--wn];
-        uint16_t tag = val_tag(v);
-        if (tag == TAG_PAIR) {
-            HeapPair *pr = (HeapPair *)(uintptr_t)(v & 0x0000FFFFFFFFFFFFULL);
-            work_reserve(&work, &wcap, wn, 2);
-            work[wn++] = pr->cdr;
-            work[wn++] = pr->car;
-        } else if (tag == TAG_CLOS) {
-            HeapClosure *cl = (HeapClosure *)(uintptr_t)(v & 0x0000FFFFFFFFFFFFULL);
-            work_reserve(&work, &wcap, wn, cl->nfree);
-            for (int i = 0; i < cl->nfree; i++)
-                work[wn++] = cl->free[i];
-        } else if (tag == TAG_TUPLE) {
-            HeapTuple *tu = (HeapTuple *)(uintptr_t)(v & 0x0000FFFFFFFFFFFFULL);
-            work_reserve(&work, &wcap, wn, tu->len);
-            for (int i = 0; i < tu->len; i++)
-                work[wn++] = tu->slot[i];
-        } else if (tag == TAG_RESOURCE) {
-            if (n == cap) {
-                cap = cap ? cap * 2 : 8;
-                found = realloc(found, (size_t)cap * sizeof(HeapResource *));
-                if (!found)
-                    abort();
-            }
-            found[n++] = (HeapResource *)(uintptr_t)(v & 0x0000FFFFFFFFFFFFULL);
-        }
+        int nk;
+        const Val *kids = val_node_shape(NULL, v, &nk, NULL);
+        if (val_tag(v) == TAG_RESOURCE)
+            TA_PUSH(found, n, cap, val_heap_ptr(v));
+        for (int i = nk - 1; i >= 0; i--)
+            TA_PUSH(work, wn, wcap, kids[i]);
     }
     free(work);
     *count_out = n;
