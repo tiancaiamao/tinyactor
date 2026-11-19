@@ -25,7 +25,6 @@ int main(void) {
     VM *vm = vm_new();
     vm_register_str_module(vm);
     Proc *p = proc_new(vm);
-    tls_current_proc = p;
 
     int cidx = vm_find_cfunc(vm, "str.concat");
 
@@ -48,7 +47,7 @@ int main(void) {
     Val args[2];
     args[0] = held[0];
     args[1] = val_string(p, big, (int)strlen(big));
-    Val joined = vm->cfuncs[cidx].fn(vm, args, 2);
+    Val joined = vm->cfuncs[cidx].fn(vm, p, args, 2);
 
     /* Now check whether the C-array-held values survived and are intact. */
     int bad = 0;

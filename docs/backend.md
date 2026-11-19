@@ -472,12 +472,12 @@ expand_imports 只重写已 import 模块，属已知边界，见 git log
 ```
 val_string(p, "hello from TA heap", 18) → TAG_STRING，text 正确
 vm_find_cfunc(vm, "str.concat")        → 5
-vm->cfuncs[5].fn(vm, parts, 2)        → "ab"   （TA 堆上的真字符串）
+vm->cfuncs[5].fn(vm, p, parts, 2)     → "ab"   （TA 堆上的真字符串）
 vm_intern_symbol(vm, "my-symbol")      → 45
 ```
 
-这正是独立 tavm 里 `str_concat` 会 segfault 的那条缝：宿主设好
-`tls_current_proc`、堆是 TA 的，就通了。**TA 自己的 C 函数可以按名直接调用，
+这正是独立 tavm 里 `str_concat` 会 segfault 的那条缝：宿主把 proc 显式传进
+cfunc（签名里的 `p`）、堆是 TA 的，就通了。**TA 自己的 C 函数可以按名直接调用，
 不需要任何适配代码**——tavm 的 `Native` 表与 TA 的 `vm->cfuncs` 同构。
 
 ### 2. tavm 的求值栈必须换成 TA 的 Proc 栈（已证明，非推测）

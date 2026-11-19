@@ -17,7 +17,7 @@
 
 /* A non-int argument is unreachable through the compiler's promise; typecheck
  * pins the parameter to Int. Fall back to 0.0 like the other C modules do. */
-static Val int_to_float(VM *vm, Val *args, int nargs) {
+static Val int_to_float(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_int(args[0]))
         return val_float(0.0);
     return val_float((double)val_get_int(args[0]));

@@ -221,7 +221,7 @@ static void chunk_forward(void *payload, Val copy) {
     memcpy((uint8_t *)payload + sizeof(HeapHeader), &fwd, sizeof(void *));
 }
 
-Val val_deep_copy(Proc *target, Val root, int *res_err) {
+Val val_deep_copy(Proc *self, Proc *target, Val root, int *res_err) {
     /* The worklist (tasks[]) and results[] keep Vals of the target heap in
      * malloc'd / C-local storage, off the TA stack, so no collection may run
      * while the tree is rebuilt: close the gate. Left un-drained on the way
@@ -304,7 +304,7 @@ Val val_deep_copy(Proc *target, Val root, int *res_err) {
                  * owner 必须是当前 proc（父），同一消息里的 payload 不重复
                  *（cons(r,r) 走 fork 等价路径，双保险）。检出即中止拷贝，
                  * 结果未定义 —— 调用方负责 proc_die。 */
-                int bad = src->owner_pid != tls_current_proc->pid;
+                int bad = src->owner_pid != self->pid;
                 for (int i = 0; !bad && i < seen_count; i++)
                     bad = src->res != NULL && seen[i]->res == src->res;
                 if (bad) {

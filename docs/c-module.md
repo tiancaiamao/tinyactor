@@ -12,8 +12,9 @@ TA 的 C 模块 = 一个 `.c` 文件 + 一个 `TaFunc` 导出表 + 注册函数�
 // lib/mymod.c  → 编译成 lib/mymod.dylib（或 .so）
 #include "ta.h"
 
-// 1) 一个 TA 函数 = 一个 C 函数。args[0..nargs-1] 是调用实参。
-static Val my_double(VM *vm, Val *args, int nargs) {
+// 1) 一个 TA 函数 = 一个 C 函数。p 是调用方进程（分配目标 + 资源归属），
+//    args[0..nargs-1] 是调用实参。
+static Val my_double(VM *vm, Proc *p, Val *args, int nargs) {
     (void)vm; (void)nargs;
     if (!val_is_int(args[0]))
         return val_int(-1);                 // 错误约定：硬错误（参数非法）→ -1

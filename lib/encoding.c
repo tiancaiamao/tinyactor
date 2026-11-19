@@ -59,8 +59,7 @@
 static const char B64_STD[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 static const char B64_URL[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-static Val b64_encode_impl(Val *args, const char *alpha) {
-    Proc *p = tls_current_proc;
+static Val b64_encode_impl(Proc *p, Val *args, const char *alpha) {
     if (!val_is_string(args[0]))
         return val_int(-1);
     HeapString *hs = val_get_string(args[0]);
@@ -94,8 +93,7 @@ static int b64_index(unsigned char c, const char *alpha) {
 }
 
 /* Shared decode: own alphabet only, padding-lenient (see header comment). */
-static Val b64_decode_impl(Val *args, const char *alpha) {
-    Proc *p = tls_current_proc;
+static Val b64_decode_impl(Proc *p, Val *args, const char *alpha) {
     if (!val_is_string(args[0]))
         return val_int(-1);
     HeapString *hs = val_get_string(args[0]);
@@ -148,16 +146,20 @@ static Val b64_decode_impl(Val *args, const char *alpha) {
     return result;
 }
 
-static Val enc_b64_encode(VM *vm, Val *args, int nargs) { return b64_encode_impl(args, B64_STD); }
-
-static Val enc_b64_decode(VM *vm, Val *args, int nargs) { return b64_decode_impl(args, B64_STD); }
-
-static Val enc_b64_url_encode(VM *vm, Val *args, int nargs) {
-    return b64_encode_impl(args, B64_URL);
+static Val enc_b64_encode(VM *vm, Proc *p, Val *args, int nargs) {
+    return b64_encode_impl(p, args, B64_STD);
 }
 
-static Val enc_b64_url_decode(VM *vm, Val *args, int nargs) {
-    return b64_decode_impl(args, B64_URL);
+static Val enc_b64_decode(VM *vm, Proc *p, Val *args, int nargs) {
+    return b64_decode_impl(p, args, B64_STD);
+}
+
+static Val enc_b64_url_encode(VM *vm, Proc *p, Val *args, int nargs) {
+    return b64_encode_impl(p, args, B64_URL);
+}
+
+static Val enc_b64_url_decode(VM *vm, Proc *p, Val *args, int nargs) {
+    return b64_decode_impl(p, args, B64_URL);
 }
 
 /* ============================================================
@@ -174,8 +176,7 @@ static int hex_index(unsigned char c) {
     return -1;
 }
 
-static Val enc_hex_encode(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val enc_hex_encode(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]))
         return val_int(-1);
     HeapString *hs = val_get_string(args[0]);
@@ -193,8 +194,7 @@ static Val enc_hex_encode(VM *vm, Val *args, int nargs) {
     return result;
 }
 
-static Val enc_hex_decode(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val enc_hex_decode(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]))
         return val_int(-1);
     HeapString *hs = val_get_string(args[0]);
@@ -226,8 +226,7 @@ static int is_unreserved(unsigned char c) {
            c == '_' || c == '.' || c == '~';
 }
 
-static Val enc_percent_encode(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val enc_percent_encode(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]))
         return val_int(-1);
     HeapString *hs = val_get_string(args[0]);
@@ -251,8 +250,7 @@ static Val enc_percent_encode(VM *vm, Val *args, int nargs) {
     return result;
 }
 
-static Val enc_percent_decode(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val enc_percent_decode(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]))
         return val_int(-1);
     HeapString *hs = val_get_string(args[0]);

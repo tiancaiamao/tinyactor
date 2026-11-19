@@ -29,17 +29,17 @@
 /* argv accessor from src/api.c (set by main.c via vm_set_argv). */
 extern void vm_get_argv(int *argc, char ***argv);
 
-static Val os_getenv(VM *vm, Val *args, int nargs) {
+static Val os_getenv(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]))
         return val_nil(); /* absence, not failure */
     HeapString *hs = val_get_string(args[0]);
     const char *v = getenv(hs->data); /* hs->data is NUL-terminated */
     if (!v)
         return val_nil();
-    return val_string(tls_current_proc, v, (int)strlen(v));
+    return val_string(p, v, (int)strlen(v));
 }
 
-static Val os_args(VM *vm, Val *args, int nargs) {
+static Val os_args(VM *vm, Proc *p, Val *args, int nargs) {
     int argc = 0;
     char **argv = NULL;
     vm_get_argv(&argc, &argv);
@@ -48,24 +48,23 @@ static Val os_args(VM *vm, Val *args, int nargs) {
     for (int i = argc - 1; i >= 0; i--) {
         if (!argv[i])
             continue;
-        list = val_pair(tls_current_proc,
-                        val_string(tls_current_proc, argv[i], (int)strlen(argv[i])), list);
+        list = val_pair(p, val_string(p, argv[i], (int)strlen(argv[i])), list);
     }
     return list;
 }
 
-static Val os_exit(VM *vm, Val *args, int nargs) {
+static Val os_exit(VM *vm, Proc *p, Val *args, int nargs) {
     exit(val_is_int(args[0]) ? (int)val_get_int(args[0]) : 1);
     /* not reached */
     return val_nil();
 }
 
-static Val os_hostname(VM *vm, Val *args, int nargs) {
+static Val os_hostname(VM *vm, Proc *p, Val *args, int nargs) {
     char buf[256];
     if (gethostname(buf, sizeof(buf)) != 0)
         return val_int(-1);
     buf[sizeof(buf) - 1] = '\0'; /* gethostname may truncate unterminated */
-    return val_string(tls_current_proc, buf, (int)strlen(buf));
+    return val_string(p, buf, (int)strlen(buf));
 }
 
 TaFunc os_funcs[] = {{"raw_getenv", os_getenv, 1},

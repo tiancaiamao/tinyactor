@@ -187,13 +187,13 @@ static void vm_wake_proc(VM *vm, Proc *p) {
  * 跑时（state 已回到 RUNNING 但那段 C 栈还没收尾）只挂一个唤醒请求，由持有
  * 者发布 —— 「never two threads running the same proc」靠这一层 + 出队处的
  * CAS 认领，而不是靠这里的锁。 */
-int mbox_deliver(VM *vm, Proc *target, Val msg) {
+int mbox_deliver(VM *vm, Proc *sender, Proc *target, Val msg) {
     int has_res = 0;
     int need = frag_calc_size(msg, &has_res);
     /* 资源收口校验（docs/c-resource-design.md §4）：self-send / 非属主 /
      * 重复 payload / 无 proc 上下文（poller 线程）→ 违规：消息不入队、
      * 归属不动，返回 -1 由调用方映射成进程隔离错误（LB_SEND）。 */
-    if (has_res && resource_send_check(msg, tls_current_proc, target) != 0)
+    if (has_res && resource_send_check(msg, sender, target) != 0)
         return -1;
     MsgFragment *frag = (MsgFragment *)malloc(sizeof(MsgFragment) + need);
     if (!frag)
@@ -248,7 +248,7 @@ Val mbox_pop(Proc *p) {
      * deep copy below cannot grow the arena — reserve first (gate is open
      * here, so growth is a safe collection). */
     proc_reserve_heap(p, val_calc_heap_size(frag->root));
-    Val v = val_deep_copy(p, frag->root, NULL); /* 校验已在入队时做过（§4） */
+    Val v = val_deep_copy(p, p, frag->root, NULL); /* 校验已在入队时做过（§4） */
     free(frag);
     return v;
 }
@@ -265,7 +265,7 @@ Val mbox_pop_cfunc(Proc *p) {
     p->mbox_count--;
     pthread_mutex_unlock(&p->mbox_lock);
 
-    Val v = val_deep_copy(p, frag->root, NULL);
+    Val v = val_deep_copy(p, p, frag->root, NULL);
     free(frag);
     return v;
 }
@@ -398,7 +398,7 @@ void proc_frame_init(VM *vm, Proc *p, int fnid, Val fnval) {
  * 返回 0 时 out_* 有效；返回 -1 = 收口违规（docs/c-resource-design.md §4：
  * 闭包捕获了非属主资源，或同一资源捕获两次）—— 子已 proc_die、从未入队，
  * 按正常退出静默收场，报告由调用方按自己的协议出（crash 报告归真凶：父）。 */
-int proc_spawn_begin(VM *vm, Val clos, Proc **out_np, Val *out_owned, int *out_fid) {
+int proc_spawn_begin(VM *vm, Proc *parent, Val clos, Proc **out_np, Val *out_owned, int *out_fid) {
     long fid = val_closure_entry(clos);
     if (fid < 0)
         fatal("spawn on non-closure");
@@ -410,7 +410,7 @@ int proc_spawn_begin(VM *vm, Val clos, Proc **out_np, Val *out_owned, int *out_f
      * 先 reserve：新 arena 很小，关门拷贝不能增长它。 */
     proc_reserve_heap(np, val_calc_heap_size(clos));
     int res_err = 0;
-    Val owned = val_deep_copy(np, clos, &res_err);
+    Val owned = val_deep_copy(parent, np, clos, &res_err);
     if (res_err) {
         proc_die(vm, np, val_nil());
         return -1;
@@ -570,7 +570,7 @@ void proc_die(VM *vm, Proc *p, Val reason) {
          * which serializes into a malloc'd fragment and wakes the watcher
          * under its mbox_lock if blocked on recv. */
         Val msg = down_msg_build(vm, p, p->watcher_refs[i], val_pid(p->pid), reason);
-        mbox_deliver(vm, w, msg);
+        mbox_deliver(vm, p, w, msg);
     }
     proc_gc_leave(p);
     pthread_mutex_unlock(&vm->procs_lock);
@@ -875,7 +875,7 @@ void vm_poller_stop(VM *vm) {
 
 /* 池 worker 的启动参数：VM + entry pid。没有 per-worker 可变态（老版的
  * WorkerCtx.current_proc 只在 force-stop 路径写、无人读，已丢）—— proc
- * 的恢复态在 Proc 里（D2），当前 proc 走 tls_current_proc。 */
+ * 的恢复态在 Proc 里（D2），当前 proc 由调用方显式传入。 */
 typedef struct {
     VM *vm;
     int entry_pid;

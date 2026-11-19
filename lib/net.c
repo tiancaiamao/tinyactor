@@ -290,14 +290,13 @@ static void net_resolve_unlink_queue(NetState *ns, NetResolve *r) {
  * path (success, timeout, refused, error) so nothing leaks.
  * ============================================================ */
 
-static Val net_connect_finish(VM *vm, int pid, NetState *ns, int *handled) {
-    Proc *p = tls_current_proc;
+static Val net_connect_finish(VM *vm, Proc *p, NetState *ns, int *handled) {
     *handled = 0;
     pthread_mutex_lock(&ns->lock);
     NetConnect **pp = &ns->connects;
     while (*pp) {
         NetConnect *e = *pp;
-        if (e->pid == pid) {
+        if (e->pid == p->pid) {
             *handled = 1;
             if (mono_now_ms() > e->deadline_ms) {
                 *pp = e->next;
@@ -332,9 +331,9 @@ static Val net_connect_finish(VM *vm, int pid, NetState *ns, int *handled) {
                 /* Spurious POLLOUT before the handshake finished — keep
                  * waiting on the same socket and deadline. */
                 pthread_mutex_unlock(&ns->lock);
-                vm_watch_fd(vm, e->fd, POLLOUT);
+                vm_watch_fd(vm, p, e->fd, POLLOUT);
                 atomic_store(&p->wait_deadline_ms, e->deadline_ms);
-                vm_yield(vm);
+                vm_yield(vm, p);
                 return val_nil();
             }
             /* Any other error (ECONNRESET, ETIMEDOUT, ENETUNREACH, ...) */
@@ -363,9 +362,8 @@ static Val net_connect_finish(VM *vm, int pid, NetState *ns, int *handled) {
  * the original timeout_ms (+ one poll cycle).
  * ============================================================ */
 
-static Val net_connect_sockaddr(VM *vm, int pid, const struct sockaddr *sa, socklen_t salen,
+static Val net_connect_sockaddr(VM *vm, Proc *p, const struct sockaddr *sa, socklen_t salen,
                                 int64_t overall_deadline_ms, NetState *ns) {
-    Proc *p = tls_current_proc;
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
         p->last_errno = errno;
@@ -382,16 +380,16 @@ static Val net_connect_sockaddr(VM *vm, int pid, const struct sockaddr *sa, sock
             close(fd);
             return net_sym(vm, "error");
         }
-        e->pid = pid;
+        e->pid = p->pid;
         e->fd = fd;
         e->deadline_ms = overall_deadline_ms;
         pthread_mutex_lock(&ns->lock);
         e->next = ns->connects;
         ns->connects = e;
         pthread_mutex_unlock(&ns->lock);
-        vm_watch_fd(vm, fd, POLLOUT);
+        vm_watch_fd(vm, p, fd, POLLOUT);
         atomic_store(&p->wait_deadline_ms, e->deadline_ms);
-        vm_yield(vm);
+        vm_yield(vm, p);
         return val_nil();
     }
 
@@ -410,9 +408,8 @@ static Val net_connect_sockaddr(VM *vm, int pid, const struct sockaddr *sa, sock
  * Stage 1 (slow path) — enqueue a DNS request and wait on its wake pipe.
  * ============================================================ */
 
-static Val net_connect_dns_enqueue(VM *vm, int pid, const char *host, int port, int64_t timeout_ms,
+static Val net_connect_dns_enqueue(VM *vm, Proc *p, const char *host, int port, int64_t timeout_ms,
                                    NetState *ns) {
-    Proc *p = tls_current_proc;
     NetResolve *r = calloc(1, sizeof(NetResolve));
     if (!r)
         return net_sym(vm, "error");
@@ -421,7 +418,7 @@ static Val net_connect_dns_enqueue(VM *vm, int pid, const char *host, int port, 
         free(r);
         return net_sym(vm, "error");
     }
-    r->pid = pid;
+    r->pid = p->pid;
     r->host = strdup(host);
     r->port = port;
     r->pipe_r = pipefd[0];
@@ -473,13 +470,13 @@ static Val net_connect_dns_enqueue(VM *vm, int pid, const char *host, int port, 
     pthread_cond_signal(&ns->resolve_cond);
     pthread_mutex_unlock(&ns->lock);
 
-    vm_watch_fd(vm, pipefd[0], POLLIN);
+    vm_watch_fd(vm, p, pipefd[0], POLLIN);
     /* Deadline wake during DNS: bounds the whole connect, not just the
      * TCP handshake, so a hung getaddrinfo cannot suspend this actor
      * forever (or stall every later hostname connect behind it). */
     atomic_store(&p->wait_deadline_ms, r->deadline_ms);
     vm_wake_poller(vm);
-    vm_yield(vm);
+    vm_yield(vm, p);
     return val_nil();
 }
 
@@ -488,8 +485,7 @@ static Val net_connect_dns_enqueue(VM *vm, int pid, const char *host, int port, 
  * "connect" (2 args, default timeout) and "connect_timeout" (3 args).
  * ============================================================ */
 
-static Val net_connect(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val net_connect(VM *vm, Proc *p, Val *args, int nargs) {
     int pid = p->pid;
     NetState *ns = get_net_state(vm);
     if (!ns)
@@ -562,7 +558,7 @@ static Val net_connect(VM *vm, Val *args, int nargs) {
                 freeaddrinfo(ai);
             return net_sym(vm, "dns_error");
         }
-        Val v = net_connect_sockaddr(vm, pid, ai->ai_addr, ai->ai_addrlen, overall_deadline_ms, ns);
+        Val v = net_connect_sockaddr(vm, p, ai->ai_addr, ai->ai_addrlen, overall_deadline_ms, ns);
         freeaddrinfo(ai);
         return v;
     }
@@ -604,10 +600,10 @@ static Val net_connect(VM *vm, Val *args, int nargs) {
         int pipe_r = rp->pipe_r;
         int64_t deadline_ms = rp->deadline_ms;
         pthread_mutex_unlock(&ns->lock);
-        vm_watch_fd(vm, pipe_r, POLLIN);
+        vm_watch_fd(vm, p, pipe_r, POLLIN);
         atomic_store(&p->wait_deadline_ms, deadline_ms);
         vm_wake_poller(vm);
-        vm_yield(vm);
+        vm_yield(vm, p);
         return val_nil();
     }
     pthread_mutex_unlock(&ns->lock);
@@ -615,7 +611,7 @@ static Val net_connect(VM *vm, Val *args, int nargs) {
     /* ---- Stage 3 re-entry: an in-progress non-blocking connect? ---- */
     {
         int handled = 0;
-        Val v = net_connect_finish(vm, pid, ns, &handled);
+        Val v = net_connect_finish(vm, p, ns, &handled);
         if (handled)
             return v;
     }
@@ -628,15 +624,15 @@ static Val net_connect(VM *vm, Val *args, int nargs) {
     addr.sin_family = AF_INET;
     addr.sin_port = htons((uint16_t)port);
     if (inet_pton(AF_INET, host->data, &addr.sin_addr) == 1) {
-        return net_connect_sockaddr(vm, pid, (struct sockaddr *)&addr, sizeof(addr),
+        return net_connect_sockaddr(vm, p, (struct sockaddr *)&addr, sizeof(addr),
                                     mono_now_ms() + timeout_ms, ns);
     }
 
     /* Slow path: enqueue DNS resolution and wait on the wake pipe. */
-    return net_connect_dns_enqueue(vm, pid, host->data, port, timeout_ms, ns);
+    return net_connect_dns_enqueue(vm, p, host->data, port, timeout_ms, ns);
 }
 
-static Val net_close(VM *vm, Val *args, int nargs) {
+static Val net_close(VM *vm, Proc *p, Val *args, int nargs) {
     int fd = (int)val_get_int(args[0]);
     close(fd);
     return val_nil();
@@ -647,15 +643,14 @@ static Val net_close(VM *vm, Val *args, int nargs) {
  * EAGAIN may resume on a different worker thread, but a proc runs on at
  * most one worker at a time, so the Proc field needs no lock and is
  * always read back by the right actor. */
-static Val net_errno(VM *vm, Val *args, int nargs) { return val_int(tls_current_proc->last_errno); }
+static Val net_errno(VM *vm, Proc *p, Val *args, int nargs) { return val_int(p->last_errno); }
 
 static Val sym_eof(VM *vm) {
     int idx = vm_intern_symbol(vm, "eof");
     return val_symbol((uint32_t)idx);
 }
 
-static Val net_listen(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val net_listen(VM *vm, Proc *p, Val *args, int nargs) {
     int port = (int)val_get_int(args[0]);
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -683,15 +678,14 @@ static Val net_listen(VM *vm, Val *args, int nargs) {
     return val_int(fd);
 }
 
-static Val net_accept(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val net_accept(VM *vm, Proc *p, Val *args, int nargs) {
     int server_fd = (int)val_get_int(args[0]);
 
     int client_fd = accept(server_fd, NULL, NULL);
     if (client_fd < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            vm_watch_fd(vm, server_fd, POLLIN);
-            vm_yield(vm);
+            vm_watch_fd(vm, p, server_fd, POLLIN);
+            vm_yield(vm, p);
             return val_nil();
         }
         p->last_errno = errno;
@@ -702,8 +696,7 @@ static Val net_accept(VM *vm, Val *args, int nargs) {
     return val_int(client_fd);
 }
 
-static Val net_read(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val net_read(VM *vm, Proc *p, Val *args, int nargs) {
     int fd = (int)val_get_int(args[0]);
     int max_len = 4096;
     if (nargs >= 2)
@@ -720,11 +713,11 @@ static Val net_read(VM *vm, Val *args, int nargs) {
     if (n < 0) {
         free(buf);
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            vm_watch_fd(vm, fd, POLLIN);
-            vm_yield(vm);
+            vm_watch_fd(vm, p, fd, POLLIN);
+            vm_yield(vm, p);
             return val_nil();
         }
-        tls_current_proc->last_errno = errno;
+        p->last_errno = errno;
         return val_int(-1);
     }
     if (n == 0) {
@@ -737,7 +730,7 @@ static Val net_read(VM *vm, Val *args, int nargs) {
     return result;
 }
 
-static Val net_write(VM *vm, Val *args, int nargs) {
+static Val net_write(VM *vm, Proc *p, Val *args, int nargs) {
     int fd = (int)val_get_int(args[0]);
     if (!val_is_string(args[1]))
         return val_int(-1);
@@ -746,11 +739,11 @@ static Val net_write(VM *vm, Val *args, int nargs) {
     ssize_t n = write(fd, hs->data, (size_t)hs->len);
     if (n < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            vm_watch_fd(vm, fd, POLLOUT);
-            vm_yield(vm);
+            vm_watch_fd(vm, p, fd, POLLOUT);
+            vm_yield(vm, p);
             return val_nil();
         }
-        tls_current_proc->last_errno = errno;
+        p->last_errno = errno;
         return val_int(-1);
     }
     return val_int((int64_t)n);
