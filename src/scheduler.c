@@ -363,6 +363,23 @@ Val mbox_pop(Proc *p) {
     return v;
 }
 
+/* Same detach+copy, but for callers inside a ccall window: the chunk arena
+ * owns the copy, so no reserve/collection may run here. do_ccall promotes
+ * the returned Val into the heap when the callback returns. */
+Val mbox_pop_cfunc(Proc *p) {
+    pthread_mutex_lock(&p->mbox_lock);
+    MsgFragment *frag = p->mbox_frag_head;
+    p->mbox_frag_head = frag->next;
+    if (!p->mbox_frag_head)
+        p->mbox_frag_tail = NULL;
+    p->mbox_count--;
+    pthread_mutex_unlock(&p->mbox_lock);
+
+    Val v = val_deep_copy(p, frag->root, NULL);
+    free(frag);
+    return v;
+}
+
 /* ================================================================
  * Run queue
  * ================================================================ */

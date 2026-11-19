@@ -1,80 +1,141 @@
 /* ============================================================
- * builtin.c — 共享的 actor 原语处理器表（冷路径）
+ * builtin.c — actor 原语的宿主 cfunc 实现
  *
- * 旧 ISA 时代这里曾是 spawn/send/recv 等一整套带 p->pc 操作数协议的
- * opcode 处理器；lispvm 替换后，spawn/send/recv 由 do_builtin（src/vm.c）
- * 的 LB_* switch 原生实现，本表只剩 vm.c 借道复用的四个处理器：
- * monitor / recv_peek / recv_commit / recv_after。
+ * 这些函数不再有专用 opcode：编译期按裸名解析成 TAG_NATIVE，运行期走
+ * CALL → do_ccall → 这里的普通 cfunc 协议（实参在 a[0..n-1]，结果按值
+ * 返回）。do_ccall 已为调用关上 GC 门并挂上 chunk arena，所以深拷得到的
+ * Val 直接返回即可，由调用方收敛进堆；这里不做 proc_push/proc_pop，也不
+ * 碰解释器局部变量。
  *
- * 与调用方（do_builtin）的约定：
- *   - 实参全在栈上（vm.c 先发布 p->sp、再把 acc flush 上栈），结果压栈，
- *     调用方 proc_pop 回 acc。处理器只经 proc_push/proc_pop 触栈，
- *     不看调用方的 C 局部 sp。
- *   - B_OK：结果已在栈顶，p->sp 为调用方继续执行的正确现场。
- *   - B_SUSPEND：proc 已阻塞——处理器在 p->mbox_lock 下查完阻塞条件、
- *     持锁返回、不动 p->state；vm.c 在同一锁窗内发布恢复点并置
- *     PROC_WAIT_RECV 后解锁，唤醒方（mbox_deliver 同锁）看到的阻塞态与
- *     恢复点互为一体。
- *
- * 这些处理器跑在指令粒度而非每 VM tick，多一次间接调用是冷路径可读性的
- * 价格；留在 opcode 里的（cons/car/cdr/类型测试/算术/除零）是付不起这个
- * 价的热指令。
+ * 挂起的原语（recv 家族）用 vm_yield_recv：它必须在 p->mbox_lock 内调用，
+ * do_ccall 随后在同一把锁里发布恢复点、置 PROC_WAIT_RECV 并解锁。这样
+ * mbox_deliver（同锁）要么看到空邮箱之前的阻塞态，要么看到消息已经入队，
+ * 不会丢唤醒。net 等 I/O 仍用 vm_yield（TA_YIELD_IO / poller）。
  * ============================================================ */
 #include "ta.h"
 
-/* ================================================================
- * recv_peek / recv_commit — selective receive
- * ================================================================ */
-/* Peek the next mailbox fragment (without removing it), deep-copied onto
- * this proc's heap. The compiler stores it in a temp slot and runs pattern
- * code against it.
- * - If a fragment exists: push it and advance peek_index.
- * - If the mailbox is exhausted: block on recv. peek_index is preserved so a
- *   resumed scan (after a new message arrives) only inspects unseen
- *   messages — already-skipped fragments don't match the (immutable)
- *   patterns, so skipping them forever is correct, and they stay for a
- *   future receive. */
-static BStatus b_recv_peek(VM *vm, Proc *p) {
-    pthread_mutex_lock(&p->mbox_lock);
-    if (p->peek_index < p->mbox_count) {
-        MsgFragment *frag = p->mbox_frag_head;
-        for (int i = 0; i < p->peek_index; i++)
-            frag = frag->next;
-        /* peek 禁令（docs/c-resource-design.md §4）：深拷而不弹出会让
-         * actor 堆与自己邮箱里两份副本都 owner==self（与 self-send 同构，
-         * GC 兜底会关掉排队中消息的 payload）—— 源头拒绝，需要资源消息
-         * 的 actor 用普通 recv。解锁后由 vm.c 发布现场并隔离死。 */
-        if (val_has_resource(frag->root)) {
-            pthread_mutex_unlock(&p->mbox_lock);
-            return B_DIED;
-        }
-        /* Reserve before the gate-closed copy; see mbox_pop. The collection
-         * may run under mbox_lock — it takes no locks, so a concurrent
-         * sender only waits, never deadlocks. p->sp must be current for it:
-         * proc_reserve_heap sizes the request from it. */
-        proc_reserve_heap(p, val_calc_heap_size(frag->root));
-        Val msg = val_deep_copy(p, frag->root, NULL);
-        p->peek_index++;
-        pthread_mutex_unlock(&p->mbox_lock);
-        proc_push(p, msg);
-        /* The copied message is rooted now; honour any collection the
-         * gate-closed deep copy requested (same as recv) — proc_push
-         * published the stack top the drain scans. */
-        proc_gc_drain(p);
-        return B_OK;
-    }
-    /* Return B_SUSPEND still holding mbox_lock so the handler (do_builtin
-     * in vm.c) can publish the resume point + PROC_WAIT_RECV atomically with
-     * the empty-mailbox check above (a concurrent mbox_deliver serializes on
-     * this lock). */
-    return B_SUSPEND;
+static Proc *current_proc(void) { return tls_current_proc; }
+
+static Val resource_die(Proc *p) {
+    /* 收口违规不在 cfunc 里 proc_die：do_ccall 统一发布现场并隔离死。 */
+    p->cfunc_die = "resource";
+    return val_nil();
 }
 
-/* A pattern matched: drop the fragment we just peeked (at peek_index-1) from
- * the mailbox and reset the scan cursor. The matched message's heap copy was
- * already consumed by the pattern (bound to variables); the fragment itself
- * is freed here. */
-static BStatus b_recv_commit(VM *vm, Proc *p) {
+/* ================================================================
+ * self / spawn / send — 不挂起
+ * ================================================================ */
+Val cfunc_self(VM *vm, Val *a, int n) {
+    (void)vm;
+    (void)a;
+    (void)n;
+    return val_pid((uint32_t)current_proc()->pid);
+}
+
+Val cfunc_spawn(VM *vm, Val *a, int n) {
+    (void)n;
+    Proc *p = current_proc();
+    Proc *np;
+    Val owned;
+    int fid;
+    if (proc_spawn_begin(vm, a[0], &np, &owned, &fid) != 0)
+        return resource_die(p);
+    proc_frame_init(vm, np, fid, owned); /* 建帧即压闭包入 fn 槽成根 */
+    runq_enqueue(vm, np->pid);
+    return val_pid((uint32_t)np->pid);
+}
+
+Val cfunc_send(VM *vm, Val *a, int n) {
+    (void)n;
+    uint32_t tpid = val_get_pid(a[0]);
+    Proc *t = vm_proc_lookup(vm, (int)tpid);
+    if (t && atomic_load(&t->state) != PROC_DEAD && mbox_deliver(vm, t, a[1]) != 0)
+        return resource_die(current_proc());
+    return val_nil();
+}
+
+/* ================================================================
+ * recv / recv_after — 邮箱为空则在持锁窗口内挂起
+ * ================================================================ */
+Val cfunc_recv(VM *vm, Val *a, int n) {
+    (void)a;
+    (void)n;
+    Proc *p = current_proc();
+    pthread_mutex_lock(&p->mbox_lock);
+    if (p->mbox_count == 0) {
+        vm_yield_recv(vm); /* 锁留给 do_ccall 收口；本调用的结果会被丢弃 */
+        return val_nil();
+    }
+    pthread_mutex_unlock(&p->mbox_lock);
+    return mbox_pop_cfunc(p);
+}
+
+Val cfunc_recv_after(VM *vm, Val *a, int n) {
+    (void)n;
+    Proc *p = current_proc();
+
+    if (atomic_load(&p->recv_deadline_ms) == RECV_AFTER_EXPIRED) {
+        atomic_store(&p->recv_deadline_ms, -1);
+        atomic_fetch_sub(&vm->recv_armed, 1);
+        return val_nil();
+    }
+    if (atomic_load(&p->recv_deadline_ms) < 0) {
+        atomic_store(&p->recv_deadline_ms, mono_now_ms() + val_get_int(a[0]));
+        atomic_fetch_add(&vm->recv_armed, 1);
+    }
+
+    pthread_mutex_lock(&p->mbox_lock);
+    if (p->mbox_count > 0) {
+        pthread_mutex_unlock(&p->mbox_lock);
+        atomic_store(&p->recv_deadline_ms, -1);
+        atomic_fetch_sub(&vm->recv_armed, 1);
+        return mbox_pop_cfunc(p);
+    }
+    if (mono_now_ms() >= atomic_load(&p->recv_deadline_ms)) {
+        pthread_mutex_unlock(&p->mbox_lock);
+        atomic_store(&p->recv_deadline_ms, -1);
+        atomic_fetch_sub(&vm->recv_armed, 1);
+        vm_wait_unregister(vm, p);
+        return val_nil();
+    }
+    vm_yield_recv(vm); /* 持锁挂起：唤醒后重执行同一条 CALL，deadline 已 armed */
+    return val_nil();
+}
+
+/* ================================================================
+ * recv_peek / recv_commit — selective receive 的扫描游标
+ * ================================================================ */
+Val cfunc_recv_peek(VM *vm, Val *a, int n) {
+    (void)a;
+    (void)n;
+    Proc *p = current_proc();
+    pthread_mutex_lock(&p->mbox_lock);
+    if (p->peek_index >= p->mbox_count) {
+        vm_yield_recv(vm); /* peek_index 保留：唤醒后只扫新消息 */
+        return val_nil();
+    }
+    MsgFragment *frag = p->mbox_frag_head;
+    for (int i = 0; i < p->peek_index; i++)
+        frag = frag->next;
+    /* peek 禁令（docs/c-resource-design.md §4）：深拷不弹出会让 actor 堆和
+     * 邮箱里各有两份 owner==self，GC 兜底会关掉排队中的 payload。 */
+    if (val_has_resource(frag->root)) {
+        pthread_mutex_unlock(&p->mbox_lock);
+        return resource_die(p);
+    }
+    /* do_ccall 已关门且挂了 arena，深拷直接落在 chunk 上；无须（也不能在
+     * 这里）proc_reserve_heap —— 它会要求 GC 门是开的。 */
+    Val msg = val_deep_copy(p, frag->root, NULL);
+    p->peek_index++;
+    pthread_mutex_unlock(&p->mbox_lock);
+    return msg;
+}
+
+Val cfunc_recv_commit(VM *vm, Val *a, int n) {
+    (void)vm;
+    (void)a;
+    (void)n;
+    Proc *p = current_proc();
     int target = p->peek_index - 1;
     pthread_mutex_lock(&p->mbox_lock);
     if (target == 0) {
@@ -96,81 +157,22 @@ static BStatus b_recv_commit(VM *vm, Proc *p) {
     p->mbox_count--;
     p->peek_index = 0;
     pthread_mutex_unlock(&p->mbox_lock);
-    return B_OK;
+    return val_nil();
 }
 
 /* ================================================================
- * recv_after — wait up to `ms` for the next message, nil on timeout
+ * monitor — 目标死亡时投递 DOWN，返回 ref
  * ================================================================ */
-/* recv_after(ms): wait up to ms for the next mailbox message. Message
- * available first -> pop and return it (FIFO, same as recv). Deadline passes
- * first -> return nil; the mailbox is untouched (Erlang/Gleam semantics: a
- * timeout never consumes messages). The atomic deadline tracks the armed
- * state: -1 = the ms operand is still on the stack (arm on this execution);
- * RECV_AFTER_EXPIRED = the scheduler's deadline scan already fired the
- * timeout while we were blocked — return nil without touching the mailbox
- * even if a message arrived after expiry; >= 0 = armed deadline, re-check
- * mbox/timeout. On block the handler publishes the resume point so
- * this builtin re-executes when woken — by mbox_deliver (message wins,
- * deadline cleared) or by the scheduler's deadline scan (mailbox still empty
- * -> nil). */
-static BStatus b_recv_after(VM *vm, Proc *p) {
-    if (atomic_load(&p->recv_deadline_ms) == RECV_AFTER_EXPIRED) {
-        atomic_store(&p->recv_deadline_ms, -1);
-        atomic_fetch_sub(&vm->recv_armed, 1);
-        proc_push(p, val_nil());
-        return B_OK;
-    }
-    if (atomic_load(&p->recv_deadline_ms) < 0) {
-        Val ms_v = proc_pop(p);
-        atomic_store(&p->recv_deadline_ms, mono_now_ms() + val_get_int(ms_v));
-        atomic_fetch_add(&vm->recv_armed, 1);
-    }
-    pthread_mutex_lock(&p->mbox_lock);
-    if (p->mbox_count > 0) {
-        pthread_mutex_unlock(&p->mbox_lock);
-        atomic_store(&p->recv_deadline_ms, -1);
-        atomic_fetch_sub(&vm->recv_armed, 1);
-        /* See recv: mbox_pop reads p->sp before the message it returns is
-         * on the stack, and the drain after it scans the stack, so p->sp is
-         * current at both points. */
-        Val msg = mbox_pop(p);
-        proc_push(p, msg);
-        proc_gc_drain(p); /* message rooted; see recv */
-        return B_OK;
-    }
-    if (mono_now_ms() >= atomic_load(&p->recv_deadline_ms)) {
-        pthread_mutex_unlock(&p->mbox_lock);
-        atomic_store(&p->recv_deadline_ms, -1);
-        atomic_fetch_sub(&vm->recv_armed, 1);
-        vm_wait_unregister(vm, p);
-        proc_push(p, val_nil());
-        return B_OK;
-    }
-    /* Block. Return B_SUSPEND still holding mbox_lock: the handler
-     * (do_builtin in vm.c) publishes the resume point +
-     * PROC_WAIT_RECV under it, so a concurrent mbox_deliver (which checks
-     * state under the same lock) can neither strand the message nor wake the
-     * proc before the resume point lands. */
-    return B_SUSPEND;
-}
-
-/* ================================================================
- * monitor — watch a target, DOWN on death, return the ref
- * ================================================================ */
-static BStatus b_monitor(VM *vm, Proc *p) {
-    Val pid_v = proc_pop(p);
-    uint32_t tpid = val_get_pid(pid_v);
+Val cfunc_monitor(VM *vm, Val *a, int n) {
+    (void)n;
+    Proc *p = current_proc();
+    uint32_t tpid = val_get_pid(a[0]);
     int ref = atomic_fetch_add(&vm->next_ref, 1) + 1;
     int alive = 0;
-    /* Fetch the target and mutate its watcher array under procs_lock:
-     * proc_die walks the same array under this lock (strictly after setting
-     * PROC_DEAD), so without the lock a concurrent death tears the realloc'd
-     * array (issue #123). */
+    /* procs_lock 同时护住 watcher 数组与 proc_die 的 PROC_DEAD 发布。 */
     pthread_mutex_lock(&vm->procs_lock);
     Proc *t = (tpid < (uint32_t)vm->procs_cap) ? vm->procs[tpid] : NULL;
     if (t && atomic_load(&t->state) != PROC_DEAD) {
-        /* Normal path: join watchers, DOWN sent when target dies */
         if (t->watcher_count >= t->watcher_cap) {
             t->watcher_cap = t->watcher_cap ? t->watcher_cap * 2 : 4;
             t->watchers = realloc(t->watchers, t->watcher_cap * sizeof(int));
@@ -183,39 +185,31 @@ static BStatus b_monitor(VM *vm, Proc *p) {
     }
     pthread_mutex_unlock(&vm->procs_lock);
     if (!alive) {
-        /* Target already dead or nonexistent: deliver DOWN immediately. Only
-         * THIS ref is at stake: we did not insert it, so proc_die's iteration
-         * cannot produce a duplicate. The Down value's tuple/string nodes
-         * live only in C locals across allocations, so no collection may run
-         * inside it: reserve its room first, then close the gate. The
-         * reservation sizes itself from p->sp, so p->sp must be current
-         * before it (the pop above left it so). */
+        /* 目标已死：只给这个 ref 补一条 DOWN。arena 已关门，DOWN 的节点
+         * 落在 chunk 上；消息经 frag_copy 序列化入队，之后 arena 丢弃即可。 */
         Val noproc = val_symbol((uint32_t)vm_intern_symbol(vm, "noproc"));
-        proc_reserve_heap(p, down_msg_heap_bytes(vm, noproc));
-        proc_gc_enter(p);
         Val msg = down_msg_build(vm, p, val_int(ref), val_pid(tpid), noproc);
         mbox_deliver(vm, p, msg);
-        /* msg was serialized out; nothing is at risk. The reopen can drain,
-         * i.e. collect on this stack, so the top it scans has to be the real
-         * one. */
-        proc_gc_reopen(p);
     }
-    /* No double-check needed: if the target died after we released the lock,
-     * proc_die's iteration - under the same lock, and only after PROC_DEAD is
-     * set - necessarily observes our entry. The old racy re-check assumed an
-     * unlocked insert that a concurrent death could skip (issue #123). */
-    proc_push(p, val_int(ref));
-    return B_OK;
+    return val_int(ref);
 }
 
-/* builtin_table is indexed by BuiltinId in ta.h — the table's internal
- * layout only. The compiled instruction is the three-word
- * OP_BUILTIN,id,n (compile.ta emit3); its id is compile.ta's B_* space,
- * which do_builtin in src/vm.c maps via the LB_* switch — the ordering
- * here is not the compiled id space. */
-const BuiltinFn builtin_table[BUILTIN_COUNT] = {
-    [BUILTIN_RECV_PEEK] = b_recv_peek,
-    [BUILTIN_RECV_COMMIT] = b_recv_commit,
-    [BUILTIN_RECV_AFTER] = b_recv_after,
-    [BUILTIN_MONITOR] = b_monitor,
-};
+/* 裸名注册：compile.ta 的 bare_cfunc 白名单必须与这张表逐项对应。 */
+void vm_register_actor_primitives(VM *vm) {
+    struct {
+        const char *name;
+        Val (*fn)(VM *vm, Val *args, int nargs);
+        int nargs;
+    } fns[] = {
+        {"self", cfunc_self, 0},
+        {"spawn", cfunc_spawn, 1},
+        {"send", cfunc_send, 2},
+        {"recv", cfunc_recv, 0},
+        {"recv_after", cfunc_recv_after, 1},
+        {"recv_peek", cfunc_recv_peek, 0},
+        {"recv_commit", cfunc_recv_commit, 0},
+        {"monitor", cfunc_monitor, 1},
+    };
+    for (size_t i = 0; i < sizeof fns / sizeof fns[0]; i++)
+        vm_register(vm, fns[i].name, fns[i].fn, fns[i].nargs);
+}

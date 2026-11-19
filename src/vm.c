@@ -1,5 +1,5 @@
 /*
- * vm.c — .tabc 解释器本体：opcode 消费、指令循环、内建派发、cfunc 调用
+ * vm.c — .tabc 解释器本体：opcode 消费、指令循环、cfunc 调用
  * （名字→下标的解析在装载侧 link_unit，见 main.c）
  *
  * 宿主是 main.c（CLI / .tabc 装载 / 调度泵）：装载器写图像词流，
@@ -36,7 +36,17 @@ void vm_yield(VM *vm) {
      * threads (a spurious yield in one proc, or a lost yield in another). */
     Proc *p = tls_current_proc;
     if (p)
-        p->yield_requested = 1;
+        p->cfunc_yield = TA_YIELD_IO;
+}
+
+void vm_yield_recv(VM *vm) {
+    /* The caller holds p->mbox_lock after observing an empty mailbox. The
+     * yield is published by do_ccall under that same lock: it writes the
+     * resume point, sets PROC_WAIT_RECV, registers the waiter and unlocks.
+     * Setting state here would let mbox_deliver wake before pc/sp land. */
+    Proc *p = tls_current_proc;
+    if (p)
+        p->cfunc_yield = TA_YIELD_RECV;
 }
 
 /* ================================================================
@@ -62,19 +72,6 @@ const char *vm_fn_name(const VM *vm, int fid) {
     return NULL;
 }
 
-/* op_builtin 派发 id（compile.ta B_* 的镜像，两边必须同步改）：
- * 已知内建编译期固化整数索引，这里 O(1) switch 派发 —— 名字永不进热路径 */
-enum {
-    LB_SELF = 0,
-    LB_SPAWN,
-    LB_SEND,
-    LB_RECV,
-    LB_MONITOR,
-    LB_RECV_AFTER,
-    LB_RECV_PEEK,
-    LB_RECV_COMMIT,
-};
-
 /* ================================================================
  * 解释器内部：报错出口、返回码、栈宏、内建派发
  * ================================================================ */
@@ -99,12 +96,12 @@ _Noreturn void fatal(const char *msg) {
         return R_DIED;                                                                             \
     } while (0)
 
-/* do_builtin / do_ccall 语境的隔离 die（PROC_DIE_ISOLATED 同款；那些调用点
+/* do_cfunc / do_ccall 语境的隔离 die（PROC_DIE_ISOLATED 同款；那些调用点
  * 在 run_proc 内直接引用 vend/vsp 局部；这里只拿已折算好的 pc/base/cbase
  * 偏移与栈深）。发布现场后 proc_die 只死当前 proc，返回 2 让调用方
  * return R_DIED（与 B_DIED 数值对齐）。 */
-static int do_builtin_die(VM *vm, Proc *p, long pc, long base, long cbase, long sp,
-                          const char *reason) {
+static int do_cfunc_die(VM *vm, Proc *p, long pc, long base, long cbase, long sp,
+                        const char *reason) {
     int die_sym = vm_intern_symbol(vm, reason);
     p->pc = (int)pc;
     p->base = base;
@@ -133,160 +130,7 @@ static int do_builtin_die(VM *vm, Proc *p, long pc, long base, long cbase, long 
 
 /* TAG_NATIVE 见 ta.h（载荷 = vm->cfuncs 下标，CALL 期直接派发 do_ccall）。 */
 
-/* ---- op_builtin 主体：actor 原语八条，放主循环外，别撑大派发热路径 ----
- *
- * 专用轻协议：前 n-1 参在栈顶（a1 = LSTK(p, sp-n+1) .. a(n-1) = LSTK(p, sp-1)），
- * 末参/结果都走 p->acc —— 与阻塞交接共用同一槽，其地址不外逃出
- * run_proc（不由 &acc 传进本函数），主循环里才有余地把它留在寄存器。
- * 无 fn 槽 —— 被调对象是编译期固化的整数 id（compile.ta B_* 的镜像），
- * switch 直接派发，零按名查找。tail 位置无需特殊处理（RET 会把 sp 收回
- * base）。零参/单参指令完全不动栈。
- * 返回非 0 = recv 阻塞：恢复点/栈已发布进 p，调用方直接 return R_BLOCKED。
- * LSTK 读 p 的栈：p 即本函数参数，LSTK/SP_* 宏显式带 p，无文件全局。 */
-static int do_builtin(VM *vm, Proc *p, long id, long n, long pc, long base, long cbase, long sp) {
-    switch (id) {
-    case LB_SELF: /* self () -> pid */
-        if (n != 0)
-            fatal("arity mismatch");
-        p->acc = val_pid((uint32_t)p->pid);
-        break;
-    case LB_SPAWN: { /* spawn (clos) -> pid，clos 在 acc */
-        if (n != 1)
-            fatal("arity mismatch");
-        Proc *np;
-        Val owned;
-        int fid;
-        if (proc_spawn_begin(vm, p->acc, &np, &owned, &fid) != 0)
-            return do_builtin_die(vm, p, pc, base, cbase, sp, "resource");
-        proc_frame_init(vm, np, fid, owned); /* 建帧即压闭包入 fn 槽成根 */
-        runq_enqueue(vm, np->pid);
-        p->acc = val_pid((uint32_t)np->pid); /* 无栈参，sp 不动 */
-        break;
-    }
-    case LB_SEND: { /* send (pid msg) -> nil：pid 在栈顶，msg 在 acc */
-        if (n != 2)
-            fatal("arity mismatch");
-        uint32_t tpid = val_get_pid(LSTK(p, sp - 1));
-        Proc *t = vm_proc_lookup(vm, (int)tpid);
-        if (t && atomic_load(&t->state) != PROC_DEAD && mbox_deliver(vm, t, p->acc) != 0)
-            /* 收口违规（§4：self-send / 非属主 / 二次 send / 重复 payload）
-             * → 进程隔离错误，只死发送方。 */
-            return do_builtin_die(vm, p, pc, base, cbase, sp, "resource");
-        p->sp = -(long)(sp - 1); /* 弹栈上的 pid（等价 SP_SET(p, sp-1)） */
-        p->acc = val_nil();
-        break;
-    }
-    case LB_RECV: { /* recv () -> msg | 阻塞 */
-        if (n != 0)
-            fatal("arity mismatch");
-        pthread_mutex_lock(&p->mbox_lock);
-        if (p->mbox_count == 0) {
-            /* 阻塞：本条不动栈，pc 不前进；先发布恢复点/栈，再置 WAIT_RECV
-             * （与 TA OP_BUILTIN 同一顺序），唤醒后重执行本条。 */
-            p->pc = pc;
-            p->base = base;
-            p->cbase = cbase;
-            p->sp = -(int)sp; /* 恢复点：vend+p->sp 重建 vsp */
-            atomic_store(&p->state, PROC_WAIT_RECV);
-            vm_wait_register(vm, p);
-            pthread_mutex_unlock(&p->mbox_lock);
-            return 1;
-        }
-        pthread_mutex_unlock(&p->mbox_lock);
-        { /* mbox_pop 的深拷贝关门分配会记 gc_pending，
-           * 先把消息压栈生根再 drain —— acc 是 C 局部，不是根集，
-           * 带着未生根的 acc 收集 = GC 搬移后读悬垂指针（car 变 nil）。*/
-            Val m = mbox_pop(p);
-            proc_push(p, m);
-            SP_ADJ(p, 1);
-            proc_gc_drain(p);
-            p->acc = LSTK(p, sp - 1); /* 收集可能搬移，从栈重读 */
-            SP_ADJ(p, -1);
-        }
-        break;
-    }
-    case LB_MONITOR: { /* monitor (pid) -> ref；pid 在 acc，永不阻塞 */
-        if (n != 1)
-            fatal("arity mismatch");
-        /* 对接 builtin_table：TA builtin 从 p->sp 栈顶 proc_pop 取参，
-         * 本 VM 协议末参在 acc —— 先发布栈顶再把 acc flush 上栈（TA 协议
-         * 参数全在栈上），调完把结果从栈取回 acc，栈深复原。
-         * b_monitor 恒 B_OK（死目标立即投递 DOWN，不挂起），无恢复点问题。 */
-        p->sp = -(long)sp;
-        proc_push(p, p->acc);
-        if (builtin_table[BUILTIN_MONITOR](vm, p) != B_OK)
-            fatal("monitor must not suspend");
-        p->acc = proc_pop(p);
-        break;
-    }
-    case LB_RECV_AFTER: { /* recv_after (ms) -> msg | nil：ms 在 acc。
-        借道共享 b_recv_after（TA 协议：参全在栈、结果压栈、可挂起）。 */
-        if (n != 1)
-            fatal("arity mismatch");
-        p->sp = -(long)sp;
-        proc_push(p, p->acc);
-        if (builtin_table[BUILTIN_RECV_AFTER](vm, p) == B_SUSPEND) {
-            /* b_recv_after 持 mbox_lock 返回 B_SUSPEND：在其锁窗内发布
-             * 恢复点并置 WAIT_RECV（宿主 OP_BUILTIN 同款），登记后解锁。
-             * 唤醒（投递或 poller deadline scan）重执行本条指令；重入时
-             * acc=nil，ms 已存 recv_deadline_ms，走已 armed 路径。 */
-            p->pc = pc;
-            p->base = base;
-            p->cbase = cbase;
-            p->sp = -(int)sp; /* 恢复点：vend+p->sp 重建 vsp */
-            atomic_store(&p->state, PROC_WAIT_RECV);
-            vm_wait_register(vm, p);
-            pthread_mutex_unlock(&p->mbox_lock);
-            return 1;
-        }
-        p->acc = proc_pop(p);
-        break;
-    }
-    case LB_RECV_PEEK: { /* recv_peek () -> msg | 阻塞。借道共享 b_recv_peek：
-        窥视扫描游标处的消息（不消费）；游标耗尽则挂起，唤醒后重执行本
-        条指令，从保留的游标继续 —— 选择性接收的跳过语义全在游标。 */
-        if (n != 0)
-            fatal("arity mismatch");
-        p->sp = -(long)sp;
-        BStatus peek_st = builtin_table[BUILTIN_RECV_PEEK](vm, p);
-        if (peek_st == B_DIED) {
-            /* peek 禁令（§4）：游标处消息带资源 —— handler 已解锁返回，
-             * 这里发布现场并按隔离死（需要资源消息的 actor 用 recv）。 */
-            return do_builtin_die(vm, p, pc, base, cbase, sp, "resource");
-        }
-        if (peek_st == B_SUSPEND) {
-            /* b_recv_peek 持 mbox_lock 返回 B_SUSPEND：在其锁窗内发布恢复
-             * 点并置 WAIT_RECV（LB_RECV_AFTER 同款），登记后解锁。唤醒
-             * （投递）重执行本条 —— peek_index 未动，从原游标继续。 */
-            p->pc = pc;
-            p->base = base;
-            p->cbase = cbase;
-            p->sp = -(int)sp; /* 恢复点：vend+p->sp 重建 vsp */
-            atomic_store(&p->state, PROC_WAIT_RECV);
-            vm_wait_register(vm, p);
-            pthread_mutex_unlock(&p->mbox_lock);
-            return 1;
-        }
-        p->acc = proc_pop(p);
-        break;
-    }
-    case LB_RECV_COMMIT: { /* recv_commit () -> nil：摘除游标处消息，游标归零。
-        恒 B_OK（已验 peek 成功在先），无挂起路径。 */
-        if (n != 0)
-            fatal("arity mismatch");
-        p->sp = -(long)sp;
-        if (builtin_table[BUILTIN_RECV_COMMIT](vm, p) != B_OK)
-            fatal("recv_commit must not suspend");
-        p->acc = val_nil();
-        break;
-    }
-    default:
-        fatal("unknown builtin");
-    }
-    return 0;
-}
-
-/* ---- op_call 的 TAG_NATIVE 分支：cfunc 调用协议（主循环外，do_builtin 同款）----
+/* ---- op_call 的 TAG_NATIVE 分支：cfunc 调用协议（主循环外，与解释器热循环同款）----
  *
  * 入口态：实参已 flush 上栈（末参在栈顶，槽 sp-1），fn 槽在 sp-n；cf = fv
  * 载荷（link_unit 装载期解析好的 cfunc 下标）。关门 + Proc.ccall 窗口协议
@@ -329,7 +173,7 @@ static int do_ccall(VM *vm, Proc *p, long cf, long n, long base, long pc, long c
     CallbackArena arena;
     callback_arena_init(&arena);
     p->ccall = &arena;
-    p->yield_requested = 0;
+    p->cfunc_yield = TA_YIELD_NONE;
     /* 采样 profiler（--profile）：把 cfunc 自身耗时精确归到发起调用的 TA
      * 帧上。否则这段 C 时间会随「下一条边界指令」按指令数摊给不相干的深栈
      * （此前：digest 的几十 µs 全记在 json.write 头上）。 */
@@ -359,10 +203,11 @@ static int do_ccall(VM *vm, Proc *p, long cf, long n, long base, long pc, long c
         callback_arena_release(&arena);
         p->ccall = NULL;
         proc_gc_leave(p);
-        return do_builtin_die(vm, p, pc, base, cbase, sp, reason);
+        return do_cfunc_die(vm, p, pc, base, cbase, sp, reason);
     }
-    if (p->yield_requested) {
-        p->yield_requested = 0;
+    if (p->cfunc_yield != TA_YIELD_NONE) {
+        int recv = p->cfunc_yield == TA_YIELD_RECV;
+        p->cfunc_yield = TA_YIELD_NONE;
         if (arena.resources)
             fatal("cfunc created a resource then yielded — payload would leak");
         callback_arena_release(&arena); /* 结果被丢弃（唤醒后重执行），链上无活对象 */
@@ -373,11 +218,14 @@ static int do_ccall(VM *vm, Proc *p, long cf, long n, long base, long pc, long c
         p->base = base;
         p->cbase = cbase;
         p->sp = -(int)(sp - 1); /* 撤回入口 flush 的 acc：回到指令入口 sp，重执行时重压 */
-        atomic_store(&p->state, PROC_WAIT_IO);
+        atomic_store(&p->state, recv ? PROC_WAIT_RECV : PROC_WAIT_IO);
         vm_wait_register(vm, p);
+        if (recv)
+            pthread_mutex_unlock(&p->mbox_lock); /* vm_yield_recv 的持锁窗口在此收口 */
         prof_yield(vm, p); /* 现场已发布：让这段 ccall 时长落到阻塞点栈上 */
         return 1;
     }
+
     /* 收敛时 arena 仍挂着（val_in_chunk 要找它），但 a->converge 把拷贝自己的
      * 分配引向 heap；收敛完链上的 chunk 已全部复制进 heap，随即摘掉 —— 后面
      * 的 reopen 可能收集，分配绝不能再落到这块即将随帧消失的内存上。 */
@@ -417,7 +265,7 @@ int run_proc(VM *vm, Proc *p) {
  *   发布 PUB_REGS()     —— 把活值写回 Proc，进入可被搬移改写的扫描区；
  *   取回 RELOAD_REGS()  —— 堆可能已换半区，vend/vsp/vbase 与 acc 重新物化。
  * 两个宏永远成对，只在这一对之间跨越解释器边界：
- *   进边界（分配 / reserve / cfunc / builtin / 采样 / yield）→ PUB_REGS()
+ *   进边界（分配 / reserve / cfunc / 采样 / yield）→ PUB_REGS()
  *   出边界                                                  → RELOAD_REGS()
  * 副本的"稀疏"含义：边界之外 p->acc / p->sp 允许陈旧 —— 会移动堆的操作全在
  * 边界上，陈旧值从不被 GC 读到；热循环因此不为每个 opcode 付一次内存写。
@@ -503,7 +351,7 @@ int run_proc(VM *vm, Proc *p) {
         [LOP_MAKE_CLOSURE] = &&op_make_closure,
         [LOP_GLOBAL] = &&op_global,
         [LOP_RESERVE] = &&op_reserve,
-        [LOP_BUILTIN] = &&op_builtin,
+        [LOP_RESERVED_28] = &&op_reserved,
         [LOP_LOADP] = &&op_loadp,
         [LOP_CONSTP] = &&op_constp,
         [LOP_GLOBP] = &&op_globp,
@@ -548,7 +396,7 @@ int run_proc(VM *vm, Proc *p) {
  * runq —— timer-sleep-concurrency 的 busy actor 就是这么把 4 个 sleeper
  * 饿到超时的。预算耗尽 = 完整解释器态进 p 的恢复态、返回 R_YIELD，入队交给
  * 调用者（worker_loop）—— 解释器入队即发布，发布后不得再触碰 p。 */
-/* 预算检查只挂在控制转移指令（JIF/JUMP/CALL/TCALL/BUILTIN/RET 的 TICK）：
+/* 预算检查只挂在控制转移指令（JIF/JUMP/CALL/TCALL/RET 的 TICK）：
  * 直线性片段平均几十条指令才付一次 sub+branch，热循环里近乎免费。预算
  * 耗尽 = 完整解释器态进 p 的恢复态、返回 R_YIELD（调用者重新入队）。采样边界
  * = 预算边界（关断时热循环零指令）。TICK 后 pc 已指向下一指令/转移目标——
@@ -1067,22 +915,10 @@ op_tcall: {
     NEXT();
 }
 
-/* op_builtin：actor 原语。主体在 do_builtin（主循环外，别撑大派发热路径），
- * 这里只做取数、推进 pc、阻塞返回。 */
-op_builtin:
-    PUB_REGS(); /* do_builtin 内 proc_push/内置栈操作按 p->sp 写；末参经 p->acc 交接 */
-    int bl = do_builtin(vm, p, pc[1], pc[2], (long)(pc - vm->words), base,
-                        (long)(cbase - vm->words), (long)(vend - vsp));
-    if (bl == 1) { /* recv 阻塞：恢复点/栈已发布进 p */
-        prof_yield(vm, p);
-        return R_BLOCKED;
-    }
-    if (bl == 2) /* 已 proc_die（资源收口违规）：清理解释器栈返回 */
-        return R_DIED;
-    RELOAD_REGS(); /* do_builtin 可能动栈（send 弹参 / arena grow）：重物化 */
-    pc += 3;
-    TICK();
-    NEXT();
+/* 旧 v4 图像里可能还留着 retired OP_BUILTIN（opcode 28）。保留槽位只为
+ * 让编号与图像格式稳定；遇到就明确报错，不再派发 actor 专用指令。 */
+op_reserved:
+    fatal("reserved opcode 28 (old builtin image — rebuild with current compiler)");
 
 op_ret:
     if (base == 0) {
