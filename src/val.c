@@ -221,6 +221,69 @@ static void chunk_forward(void *payload, Val copy) {
     memcpy((uint8_t *)payload + sizeof(HeapHeader), &fwd, sizeof(void *));
 }
 
+/* 装配阶段：孩子已按构造顺序压在 results 上，倒序弹回填进 target 堆里的新
+ * 骨架。深拷与收敛拷贝共用一份 —— 两者对「值从哪来、拷完要不要转发」各有
+ * 主张，但把 pair/tuple/closure 装起来是同一件事（漏填一个字段就是内存
+ * 垃圾，这种代码不该有两份）。 */
+static Val copy_attach(Proc *target, Val v, Val *results, int *result_count) {
+    uint16_t tag = val_tag(v);
+    if (tag == TAG_PAIR) {
+        Val cdr = results[--*result_count];
+        Val car = results[--*result_count];
+        return val_pair(target, car, cdr);
+    }
+    if (tag == TAG_TUPLE) {
+        int n;
+        val_node_shape(NULL, v, &n, NULL);
+        Val nv = val_tuple_new(target, n);
+        HeapTuple *dst = val_as_tuple(nv);
+        for (int i = n - 1; i >= 0; i--)
+            dst->slot[i] = results[--*result_count];
+        return nv;
+    }
+    HeapClosure *src = val_as_clos(v);
+    int n = src->nfree;
+    HeapClosure *dst =
+        (HeapClosure *)proc_heap_alloc(target, sizeof(HeapClosure) + (int)(n * sizeof(Val)));
+    dst->hdr.type = HEAP_CLOS;
+    dst->hdr.flags = 0;
+    dst->entry = src->entry;
+    dst->nfree = n;
+    for (int i = n - 1; i >= 0; i--)
+        dst->free[i] = results[--*result_count];
+    return box_tag_payload(TAG_CLOS, (uint64_t)(uintptr_t)dst);
+}
+
+/* 原子堆对象（string / bytes / resource）：正文拷进 target 堆，resource 的
+ * payload 指针照抄（堆外，共享）——归属改写不在这里做，两条路径各有收口
+ *（深拷等拷贝成功才改，收敛保持原样）。pair/tuple/closure 有孩子，走不到
+ * 这里（val_node_shape 已按 tag 分派过）。 */
+static Val atom_rebuild(Proc *target, Val v) {
+    void *payload = val_heap_ptr(v);
+    switch (val_tag(v)) {
+    case TAG_STRING: {
+        HeapString *src = payload;
+        return val_string(target, src->data, src->len);
+    }
+    case TAG_BYTES: {
+        HeapBytes *src = payload;
+        return val_bytes(target, src->data, src->len);
+    }
+    case TAG_RESOURCE: {
+        HeapResource *src = payload;
+        HeapResource *dst = (HeapResource *)proc_heap_alloc(target, sizeof(HeapResource));
+        dst->h.type = HEAP_RESOURCE;
+        dst->h.flags = 0;
+        dst->owner_pid = src->owner_pid;
+        dst->res = src->res; /* payload 共享 */
+        return box_tag_payload(TAG_RESOURCE, (uint64_t)(uintptr_t)dst);
+    }
+    default:
+        fprintf(stderr, "val copy: unknown heap atom tag 0x%x\n", val_tag(v));
+        abort(); /* 不许静默变 nil（docs/c-resource-design.md §8） */
+    }
+}
+
 Val val_deep_copy(Proc *self, Proc *target, Val root, int *res_err) {
     /* The worklist (tasks[]) and results[] keep Vals of the target heap in
      * malloc'd / C-local storage, off the TA stack, so no collection may run
@@ -248,33 +311,8 @@ Val val_deep_copy(Proc *self, Proc *target, Val root, int *res_err) {
         uint16_t tag = val_tag(v);
 
         if (task.kind == COPY_NODE) {
-            /* 孩子已按构造顺序压在 results 上，倒序弹回。 */
-            if (tag == TAG_PAIR) {
-                Val cdr = results[--result_count];
-                Val car = results[--result_count];
-                TA_PUSH(results, result_count, result_cap, val_pair(target, car, cdr));
-            } else if (tag == TAG_TUPLE) {
-                int n;
-                val_node_shape(NULL, v, &n, NULL);
-                Val nv = val_tuple_new(target, n);
-                HeapTuple *dst = val_as_tuple(nv);
-                for (int i = n - 1; i >= 0; i--)
-                    dst->slot[i] = results[--result_count];
-                TA_PUSH(results, result_count, result_cap, nv);
-            } else {
-                HeapClosure *src = val_as_clos(v);
-                int n = src->nfree;
-                HeapClosure *dst = (HeapClosure *)proc_heap_alloc(
-                    target, sizeof(HeapClosure) + (int)(n * sizeof(Val)));
-                dst->hdr.type = HEAP_CLOS;
-                dst->hdr.flags = 0;
-                dst->entry = src->entry;
-                dst->nfree = n;
-                for (int i = n - 1; i >= 0; i--)
-                    dst->free[i] = results[--result_count];
-                TA_PUSH(results, result_count, result_cap,
-                        box_tag_payload(TAG_CLOS, (uint64_t)(uintptr_t)dst));
-            }
+            TA_PUSH(results, result_count, result_cap,
+                    copy_attach(target, v, results, &result_count));
             continue;
         }
 
@@ -291,49 +329,33 @@ Val val_deep_copy(Proc *self, Proc *target, Val root, int *res_err) {
             TA_PUSH(results, result_count, result_cap, v);
             continue;
         }
-        if (tag == TAG_STRING) {
-            HeapString *src = val_heap_ptr(v);
-            TA_PUSH(results, result_count, result_cap, val_string(target, src->data, src->len));
-        } else if (tag == TAG_BYTES) {
-            HeapBytes *src = val_heap_ptr(v);
-            TA_PUSH(results, result_count, result_cap, val_bytes(target, src->data, src->len));
-        } else if (tag == TAG_RESOURCE) {
+        if (tag == TAG_RESOURCE && res_err) {
+            /* 收口校验（spawn 路径，docs/c-resource-design.md §4）：owner
+             * 必须是当前 proc（父），同一消息里的 payload 不重复
+             *（cons(r,r) 走 fork 等价路径，双保险）。检出即中止拷贝，
+             * 结果未定义 —— 调用方负责 proc_die。 */
             HeapResource *src = val_heap_ptr(v);
-            if (res_err) {
-                /* 收口校验（spawn 路径，docs/c-resource-design.md §4）：
-                 * owner 必须是当前 proc（父），同一消息里的 payload 不重复
-                 *（cons(r,r) 走 fork 等价路径，双保险）。检出即中止拷贝，
-                 * 结果未定义 —— 调用方负责 proc_die。 */
-                int bad = src->owner_pid != self->pid;
-                for (int i = 0; !bad && i < seen_count; i++)
-                    bad = src->res != NULL && seen[i]->res == src->res;
-                if (bad) {
-                    *res_err = 1;
-                    result = val_nil();
-                    goto copy_done;
-                }
+            int bad = src->owner_pid != self->pid;
+            for (int i = 0; !bad && i < seen_count; i++)
+                bad = src->res != NULL && seen[i]->res == src->res;
+            if (bad) {
+                *res_err = 1;
+                result = val_nil();
+                goto copy_done;
             }
-            /* 拷贝 header。归属**先照抄**、挪到拷贝成功后统一改写（见
-             * copy_done）：中途放弃的拷贝（上面的收口违规）会把半成品
-             * header 留在 target 堆里，若此刻就已写成 target 的归属，收尾的
-             * proc_die(target) 就会替发送方释放 payload——而发送方堆里的
-             * 旧 header 还自称属主，下次释放即 UAF。照抄则失败路径的
-             * 半成品仍归原属主，proc_die 扫到就跳过。
-             * recv 路径（res_err == NULL）不需要改写：fragment 里的归属在
-             * 投递时已写成接收方。 */
-            HeapResource *dst = (HeapResource *)proc_heap_alloc(target, sizeof(HeapResource));
-            dst->h.type = HEAP_RESOURCE;
-            dst->h.flags = 0;
-            dst->owner_pid = src->owner_pid;
-            dst->res = src->res; /* payload 共享 */
-            if (res_err)
-                TA_PUSH(seen, seen_count, seen_cap, dst);
-            TA_PUSH(results, result_count, result_cap,
-                    box_tag_payload(TAG_RESOURCE, (uint64_t)(uintptr_t)dst));
-        } else {
-            fprintf(stderr, "val_deep_copy: unknown tag 0x%x\n", tag);
-            abort(); /* 不许静默变 nil（docs/c-resource-design.md §8） */
         }
+        /* atom_rebuild 把 header 的归属**照抄**过来，挪到拷贝成功后统一改写
+         * （见 copy_done）：中途放弃的拷贝（上面的收口违规）会把半成品
+         * header 留在 target 堆里，若此刻就已写成 target 的归属，收尾的
+         * proc_die(target) 就会替发送方释放 payload——而发送方堆里的旧
+         * header 还自称属主，下次释放即 UAF。照抄则失败路径的半成品仍归
+         * 原属主，proc_die 扫到就跳过。
+         * recv 路径（res_err == NULL）不需要改写：fragment 里的归属在投递
+         * 时已写成接收方。 */
+        Val nv = atom_rebuild(target, v);
+        if (res_err && tag == TAG_RESOURCE)
+            TA_PUSH(seen, seen_count, seen_cap, (HeapResource *)val_heap_ptr(nv));
+        TA_PUSH(results, result_count, result_cap, nv);
     }
 
     result = results[0];
@@ -351,21 +373,31 @@ copy_done:
     return result;
 }
 
-/* Upper bound of the heap bytes val_deep_copy(target, v) will allocate.
- * DAG sharing is counted once per occurrence (an over-estimate, never
- * under). Callers use it to reserve arena room before a gate-closed copy:
- * the copy itself cannot grow the arena — its worklist holds unrooted
- * Vals — so the room must exist beforehand (proc_reserve_heap). */
-int val_calc_heap_size(Val root) {
+/* 值树的总字节数，每个对象 8 字节对齐。两种调用方只差一个数：
+ *
+ *   min_object — 最小对象下限。GC 堆要给转发指针留槽（ta_heap_object_size，
+ *                空字符串也占 TA_HEAP_MIN_OBJECT）；消息分片不是 GC 堆、
+ *                不需要那个槽，传 0 = 无下限。
+ *   has_res   — 非 NULL 时顺带报「树里含资源」（投递前的快路径校验）。
+ *
+ * 用途是「关 GC 门之前预留空间」：val_deep_copy 的工作表里放的是尚未
+ * root 的 Val，拷贝期间不能再触发收集，所以位置必须先留出来。DAG 共享按
+ * 出现次数重复计数 —— 只会高估、不会低估。 */
+int val_tree_size(Val root, int min_object, int *has_res) {
     Val *work = NULL;
     int n = 0, cap = 0, total = 0;
 
+    if (has_res)
+        *has_res = 0;
     TA_PUSH(work, n, cap, root);
     while (n > 0) {
         Val v = work[--n];
         int nk, raw;
         const Val *kids = val_node_shape(NULL, v, &nk, &raw);
-        total += ta_heap_object_size(raw);
+        int size = (raw + 7) & ~7;
+        total += size < min_object ? min_object : size;
+        if (has_res && val_tag(v) == TAG_RESOURCE)
+            *has_res = 1;
         for (int i = nk - 1; i >= 0; i--)
             TA_PUSH(work, n, cap, kids[i]);
     }
@@ -398,31 +430,7 @@ Val val_converge_copy(Proc *target, Val root) {
         uint16_t tag = val_tag(v);
 
         if (task.kind == COPY_NODE) {
-            Val nv;
-            if (tag == TAG_PAIR) {
-                Val cdr = results[--result_count];
-                Val car = results[--result_count];
-                nv = val_pair(target, car, cdr);
-            } else if (tag == TAG_TUPLE) {
-                int n;
-                val_node_shape(NULL, v, &n, NULL);
-                nv = val_tuple_new(target, n);
-                HeapTuple *dst = val_as_tuple(nv);
-                for (int i = n - 1; i >= 0; i--)
-                    dst->slot[i] = results[--result_count];
-            } else {
-                HeapClosure *src = val_as_clos(v);
-                int n = src->nfree;
-                HeapClosure *dst = (HeapClosure *)proc_heap_alloc(
-                    target, sizeof(HeapClosure) + (int)(n * sizeof(Val)));
-                dst->hdr.type = HEAP_CLOS;
-                dst->hdr.flags = 0;
-                dst->entry = src->entry;
-                dst->nfree = n;
-                for (int i = n - 1; i >= 0; i--)
-                    dst->free[i] = results[--result_count];
-                nv = box_tag_payload(TAG_CLOS, (uint64_t)(uintptr_t)dst);
-            }
+            Val nv = copy_attach(target, v, results, &result_count);
             /* DAG 共享：留下 forwarding，后出现的同一对象复用这份副本，让
              * 每个对象只重建一次（分配量守住调用方的 arena 上限，身份也
              * 稳定）。闭包不能转发，见 chunk_forward 的注释。 */
@@ -461,28 +469,10 @@ Val val_converge_copy(Proc *target, Val root) {
                 TA_PUSH(tasks, task_count, task_cap, ((CopyTask){COPY_VALUE, kids[i]}));
             continue;
         }
-        /* 原子堆对象：string / bytes / resource，拷进堆并转发。 */
-        Val nv;
-        if (tag == TAG_STRING) {
-            HeapString *src = payload;
-            nv = val_string(target, src->data, src->len);
-        } else if (tag == TAG_BYTES) {
-            HeapBytes *src = payload;
-            nv = val_bytes(target, src->data, src->len);
-        } else if (tag == TAG_RESOURCE) {
-            /* cfunc 在 ccall 窗口里造的资源 header 落在 chunk，回调收敛时
-             * rebuild 进堆（payload 不动，共享）；forwarding 同 string。 */
-            HeapResource *src = payload;
-            HeapResource *dst = (HeapResource *)proc_heap_alloc(target, sizeof(HeapResource));
-            dst->h.type = HEAP_RESOURCE;
-            dst->h.flags = 0;
-            dst->owner_pid = src->owner_pid;
-            dst->res = src->res;
-            nv = box_tag_payload(TAG_RESOURCE, (uint64_t)(uintptr_t)dst);
-        } else {
-            fprintf(stderr, "val_converge_copy: unknown tag 0x%x\n", tag);
-            abort(); /* 不许静默变 nil（docs/c-resource-design.md §8） */
-        }
+        /* 原子堆对象：string / bytes / resource，拷进堆并转发。cfunc 在 ccall
+         * 窗口里造的资源 header 也落在 chunk，回调收敛时同样 rebuild 进堆
+         *（payload 不动，共享）。 */
+        Val nv = atom_rebuild(target, v);
         chunk_forward(payload, nv);
         TA_PUSH(results, result_count, result_cap, nv);
     }

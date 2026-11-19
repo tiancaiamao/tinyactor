@@ -558,7 +558,7 @@ static inline void ta_arr_grow(void **items, int *cap, int count, int need, size
  * ============================================================
  *
  * 消息分片（scheduler.c frag_copy）、深拷（val.c val_deep_copy /
- * val_converge_copy）、大小预估（val_calc_heap_size / frag_calc_size）、
+ * val_converge_copy）、大小预估（val_tree_size）、
  * 资源收集（resource.c）原先各写了一遍 tag 分发：同一份结构知识六份副本，
  * 加一个堆类型要改六处，漏一处不是崩溃而是**静默少拷一个孩子**。现在只在
  * 这里。尺寸（val_node_shape → heap_obj_raw_size）同理只有一份。

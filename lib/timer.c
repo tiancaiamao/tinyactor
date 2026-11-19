@@ -30,7 +30,7 @@
  * sift-up/down code.
  *
  * Message capture: at registration the message tree is snapshotted into
- * a malloc'd MsgFragment (frag_calc_size/frag_copy — plain malloc, GC
+ * a malloc'd MsgFragment (val_tree_size/frag_copy — plain malloc, GC
  * invisible), so the timer outlives the caller's heap collections and
  * even the caller itself. On fire the snapshot is delivered through
  * mbox_deliver, the same path as a regular send (a dead target simply
@@ -140,7 +140,7 @@ static int64_t timer_register(VM *vm, Proc *caller, int target_pid, int64_t ms, 
     /* Snapshot the message before it can be collected with the caller's
      * heap: this is plain malloc outside any fromspace (see the fragment
      * comment in scheduler.c). */
-    MsgFragment *frag = malloc(sizeof(MsgFragment) + frag_calc_size(msg, NULL));
+    MsgFragment *frag = malloc(sizeof(MsgFragment) + val_tree_size(msg, 0, NULL));
     if (!frag)
         return 0;
     frag->next = NULL;
