@@ -32,8 +32,10 @@ fn main() {
     let c8 = if vm.tok_at(id, 99) == 0 { 1 } else { 0 };
 
     vm.free_tok_vec(id);
-    // released handle: the ops see a closed resource, not a crash
+    // released handle: the ops see a closed resource, not a crash — the
+    // fallbacks are the same ones as past-the-end ('eof / nil / 0)
     let c9 = if null?(vm.tok_val(id, 0)) { 1 } else { 0 };
+    let c11 = if vm.tok_type(id, 0) == 'eof { 1 } else { 0 };
 
     // spawn a proc that makes a tok vec and abandons it, then dies —
     // the GC / teardown fallback must release it.
@@ -47,8 +49,8 @@ fn main() {
     let got = recv();
     let c10 = if got == 7 { 1 } else { 0 };
 
-    let total = c0 + c1 + c2 + c3 + c4 + c5 + c6 + c7 + c8 + c9 + c10;
-    if total == 11 { print("PASS tokvec-api"); } else {
+    let total = c0 + c1 + c2 + c3 + c4 + c5 + c6 + c7 + c8 + c9 + c10 + c11;
+    if total == 12 { print("PASS tokvec-api"); } else {
         print("FAIL tokvec-api");
     }
 }

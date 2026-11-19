@@ -111,7 +111,7 @@ external fn greet(name: String) -> String              // 缺省 = 模块名.函
 
 每个编译器改动 commit：FIXED POINT VERIFIED + make test 100 绿。
 
-已在 D2 覆盖：if 条件 typecheck 要求 Bool，非 Bool 编译期报错；运行时 OP_JUMP_IF_FALSE 的 falsy={nil,false} 语义保留（防御性）。
+已在 D2 覆盖：if 条件 typecheck 要求 Bool，非 Bool 编译期报错；运行时 `LOP_JIF` 的 falsy={nil,false} 语义保留（防御性）。
 
 ## 待对齐主题（review comments 剩余）
 
@@ -216,10 +216,11 @@ OP_BUILTIN id n        // id = B_* 下标；n = 实参数。spawn 的实参就�
   一个 opcode，收益只体现在"省掉一层间接调用"，而那层调用的成本相对原语本身可以
   忽略。
 - **opcode 是"最贵的一种扩展点"**：每加一个 opcode 要同步维护多处镜像——
-  现行是 `lib/bootstrap/compile.ta` 的 `const OP_*`（编码权威）↔ `ta.h` 的 `LOP_*`
-  枚举、`compile.ta` 的 `B_*` ↔ `src/vm.c` 的 `LB_*`（`tools/check_opcode_mirrors.py`
-  把守）——更早的镜像（`codegen.ta` 镜像常量、`vm.c dispatch_table[]`、
-  `api.c instr_len[]`）已随 `codegen.ta` 删除与 VM 重构一并消失。
+  现行只剩一处：`lib/bootstrap/compile.ta` 的 `const OP_*`（编码权威）↔ `ta.h`
+  的 `LOP_*` 枚举，由 `tools/check_opcode_mirrors.py` 把守。更早的镜像
+  （`codegen.ta` 镜像常量、`vm.c dispatch_table[]`、`api.c instr_len[]`、
+  原语的 `B_*`↔`LB_*` id 链）已随 `codegen.ta` 删除、VM 重构与 actor 原语改
+  cfunc 一并消失。
   而 primitive 的集合还在长（`monitor`、
   `recv_after` 都是后加的），每加一个就动一次这套镜像，冲突面大且容易漏。
 - **让热路径保持"全是便宜指令"**：dispatch 表里现在只剩 cons/car/cdr/类型判断/
@@ -227,18 +228,16 @@ OP_BUILTIN id n        // id = B_* 下标；n = 实参数。spawn 的实参就�
 
 **代价 / 取舍**（明确记录）：
 
-- **多一层间接调用**（只落在 `builtin_table[]` 的那 4 个）：每条原语指令多一次
+- **多一层间接调用**（当时只落在 `builtin_table[]` 的那 4 个）：每条原语指令多一次
   `builtin_table[id]` 查表 + 间接调用，以及 `OP_BUILTIN` handler 里一次 SP 回写/重载。
   `self / spawn / send / recv` 直接是 `do_builtin` 的 switch 分支，没有额外间接调用。
   冷路径上不可测。
-- **`id` 是手写契约**：`B_*` 常量（`compile.ta`）↔ `LB_*`（`ta.h`，`do_builtin`
-  的 switch 标签）必须逐项对齐，由 `check_opcode_mirrors.py` 对照
-  （`OP_*`↔`LOP_*`、`B_*`↔`LB_*`：常量名、数值、计数，枚举留洞也报错）。
-  第二张表 `builtin_table[]`（`src/builtin.c`）用指定初始化器（`[BUILTIN_MONITOR] = b_monitor`）
-  按名字索引，写错名字编译器直接报错，但**漏一项会留下 NULL 槽位**，这部分仍靠
-  review 兜住（脚本不解析该表）；它的 `BuiltinId`（`ta.h`）只是表内布局，
-  不是编译 id 空间。旧的"每个原语一个 opcode"模式下这个契约是隐式
-  的（opcode 号本身就是身份）。
+- **当时的 id 链已整体消失**：`B_*`（`compile.ta`）↔ `LB_*`（`ta.h` 的
+  `do_builtin` 标签）那条手写 id 契约、`builtin_table[]`（`src/builtin.c`）与
+  `BuiltinId`（`ta.h`）都随原语改 cfunc 退休了 —— 原语现在就是普通 cfunc，
+  靠名字在 `vm_register` 里注册。所以 `check_opcode_mirrors.py` 只剩
+  `OP_*`↔`LOP_*` 一份镜像要看守（原话「旧模式下契约是隐式的（opcode 号本身
+  就是身份）」只作历史记录）。
 - **编号留洞**：删掉的编号**不回收**。活着的编号空间只有一份（`lib/bootstrap/compile.ta`
   的 `const OP_* = N` 是权威，`ta.h` 的 `LOP_*` 是逐条镜像），洞就用
   `LOP_RESERVED_28` 这种具名占位符钉住 —— 好处是幸存编号一个都不动，已入库的
@@ -256,11 +255,10 @@ OP_BUILTIN id n        // id = B_* 下标；n = 实参数。spawn 的实参就�
 **新 opcode 的准入门槛（本决策之后的规则）**：加 opcode 必须满足
 **(a) 在每条指令都跑的热路径上，且 (b) 明确比一次间接调用更便宜**（带内联的
 一两个字节操作、单次数组索引/算术、无函数调用的栈操作）。不满足就别加 opcode：
-加进 `B_*`/`LB_*` 这条 id 链（原语），或加进 `builtin_table[]`（两后端共用的
-阻塞处理器）——两者都不占需要同步维护的 opcode 镜像位置
-（`compile.ta`/`ta.h`/`src/vm.c` 的常量与枚举，`check_opcode_mirrors.py` 把守）。
+注册成 cfunc（`vm_register`，走 CALL → TAG_NATIVE → do_ccall，原语就这么来的）
+—— 它不占 opcode 编号，也就没有需要同步维护的镜像。
 反例即本次迁走的 9 个原语（冷、且重）；正例是留在 opcode 里的
-cons / car / cdr / 类型判断 / 算术 / `OP_SELF`。
+cons / car / cdr / 类型判断 / 算术。
 
 **影响面**（当次 PR 的改动清单，历史记录）：`ta.h`（枚举改名 + 保留 9 个洞）/
 `src/vm.c`（删 9 个原语的独立 handler，保留 `OP_SELF`/`OP_BUILTIN` 与其 path）/

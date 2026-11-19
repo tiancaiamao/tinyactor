@@ -449,7 +449,15 @@ static inline void proc_set_mem(Proc *p, uint8_t *mem, int size) {
  * 与本文件顶部的 TA_ABI_VERSION 无关，两者的分工见那里的说明。 */
 #define TA_BC_VERSION 4
 
-/* ---- opcode（与 compile.ta 严格一致；解释器 vm.c + 装载器 main.c 共用） ---- */
+/* ---- opcode（与 compile.ta 严格一致；解释器 vm.c + 装载器 main.c 共用） ----
+ *
+ * 编号只追加、绝不重编号、绝不删号：入库的 lib/bootstrap.tabc 是自举种子，
+ * 里面写的就是这些编号 —— 重编号等于让种子里的每条指令指向错的语义，自举链
+ * 当天就断。退休指令留具名洞（LOP_RESERVED_28 = 退休的 OP_BUILTIN 槽），
+ * 新增指令追加在 LOP_COUNT 之前。
+ *
+ * 「与 compile.ta 的 OP_* 同号同名」由 tools/check_opcode_mirrors.py 看守
+ * （make test 的 test-opcode-mirror），别指望靠人眼比对两份列表。 */
 enum {
     LOP_CONST = 0,
     LOP_LOAD,
@@ -466,7 +474,7 @@ enum {
     LOP_GT,
     LOP_GE,
     LOP_EQ,
-    LOP_CONSQ,
+    LOP_PAIRP, /* cons? —— 编号 15 与 compile.ta 的 OP_PAIRP 同号 */
     LOP_SYMP,
     LOP_CONS,
     LOP_CAR,

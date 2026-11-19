@@ -23,7 +23,8 @@
 //                                              when the argument is not a
 //                                              pair)
 //   tok_type(vec, pos : Int)       -> a        token type symbol; 'eof past
-//                                              the end
+//                                              the end or if the handle is
+//                                              dead (freed / transferred)
 //   tok_val(vec, pos : Int)        -> a        token payload; nil past the end
 //   tok_at(vec, pos : Int)         -> Int      token's 0-based source offset;
 //                                              0 past the end
