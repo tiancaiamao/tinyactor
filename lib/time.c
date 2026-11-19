@@ -38,13 +38,13 @@
 #include "ta.h"
 #include <time.h>
 
-static Val time_now_ms(VM *vm, Val *args, int nargs) {
+static Val time_now_ms(VM *vm, Proc *p, Val *args, int nargs) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     return val_int((int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
 }
 
-static Val time_monotonic_ms(VM *vm, Val *args, int nargs) {
+static Val time_monotonic_ms(VM *vm, Proc *p, Val *args, int nargs) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return val_int((int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
@@ -62,27 +62,26 @@ static Val time_monotonic_ms(VM *vm, Val *args, int nargs) {
  *                spurious wake — yield again without re-arming.
  * A returned nil means "suspended": do_ccall rewinds pc and the result
  * is discarded, same contract as net_connect's in-flight return. */
-static Val time_sleep(VM *vm, Val *args, int nargs) {
+static Val time_sleep(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_int(args[0]))
         return val_int(-1);
     int64_t ms = val_get_int(args[0]);
     if (ms <= 0)
         return val_int(0); /* nothing to wait for: no suspension */
-    Proc *p = tls_current_proc;
     int64_t deadline = atomic_load(&p->wait_deadline_ms);
     if (deadline < 0) {
         atomic_store(&p->wait_deadline_ms, mono_now_ms() + ms);
         p->wait_fd = -1; /* poll() ignores fd<0 entries; deadline-only wait */
         p->wait_events = 0;
         vm_wake_poller(vm); /* a blocked poll() must adopt the new deadline */
-        vm_yield(vm);
+        vm_yield(vm, p);
         return val_nil();
     }
     if (mono_now_ms() >= deadline) {
         atomic_store(&p->wait_deadline_ms, -1);
         return val_int(0);
     }
-    vm_yield(vm);
+    vm_yield(vm, p);
     return val_nil();
 }
 

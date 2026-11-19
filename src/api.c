@@ -202,7 +202,7 @@ static int ta_max_procs_env(void) {
     return MAX_PROCS;
 }
 
-static Val cfunc_print(VM *vm, Val *args, int nargs);
+static Val cfunc_print(VM *vm, Proc *p, Val *args, int nargs);
 
 VM *vm_new(void) {
     VM *vm = calloc(1, sizeof(VM));
@@ -292,15 +292,9 @@ void vm_free(VM *vm) {
         Proc *p = vm->procs[i];
         if (!p)
             continue;
-        /* free any undelivered message fragments —— 消息里的资源归属是这个
-         * （被 teardown 而非正常死亡的）proc，先兑底释放（§6.3） */
-        MsgFragment *frag = p->mbox_frag_head;
-        while (frag) {
-            MsgFragment *nx = frag->next;
-            resource_release_tree(frag->root, p->pid);
-            free(frag);
-            frag = nx;
-        }
+        /* 消息里的资源归属是这个（被 teardown 而非正常死亡的）proc，
+         * 连同未投递的消息一起还掉（§6.3） */
+        mbox_drain(p);
         pthread_mutex_destroy(&p->mbox_lock);
         /* 活堆兑底（§6.3）：同 proc_die，全堆都是垃圾 */
         if (p->mem)
@@ -364,14 +358,14 @@ void vm_free(VM *vm) {
 
 /* print: same behavior as the deleted OP_PRINT opcode — print_val +
  * newline + flush, evaluates to nil. Typecheck pins arity to 1. */
-static Val cfunc_print(VM *vm, Val *args, int nargs) {
+static Val cfunc_print(VM *vm, Proc *p, Val *args, int nargs) {
     print_val(vm, args[0]);
     printf("\n");
     fflush(stdout);
     return val_nil();
 }
 
-void vm_register(VM *vm, const char *name, Val (*fn)(VM *vm, Val *args, int nargs), int nargs) {
+void vm_register(VM *vm, const char *name, TaCFunc fn, int nargs) {
     if (vm->cfunc_count >= MAX_CFUNCS)
         return;
     char *dup = strdup(name);
@@ -515,8 +509,7 @@ void vm_get_argv(int *argc, char ***argv) {
 /* (vm.get_arg [idx]) -> String
  * Returns target arg by index (0-based, after flags).
  * With no arg, returns index 0 (backward compatible). */
-static Val vm_get_arg_fn(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val vm_get_arg_fn(VM *vm, Proc *p, Val *args, int nargs) {
     int start = 1;
     if (g_argc >= 2 &&
         (strcmp(g_argv[1], "--bootstrap") == 0 || strcmp(g_argv[1], "--bootstrap-emit") == 0))
@@ -536,7 +529,7 @@ static Val vm_get_arg_fn(VM *vm, Val *args, int nargs) {
  * name, and link_unit resolves the cfunc index at load time
  * (find_cfunc_autoload in src/main.c). Kept as a query primitive (the
  * typechecker still pins its type). */
-static Val vm_cfunc_index_fn(VM *vm, Val *args, int nargs) {
+static Val vm_cfunc_index_fn(VM *vm, Proc *p, Val *args, int nargs) {
     const char *name = NULL;
     if (val_is_symbol(args[0])) {
         name = vm_symbol_name(vm, val_get_symbol(args[0]));
@@ -554,7 +547,7 @@ static Val vm_cfunc_index_fn(VM *vm, Val *args, int nargs) {
 
 /* (vm.is_builtin_module name) -> Bool
  * Returns true if the given module name is a C-registered builtin. */
-static Val vm_is_builtin_module_fn(VM *vm, Val *args, int nargs) {
+static Val vm_is_builtin_module_fn(VM *vm, Proc *p, Val *args, int nargs) {
     const char *name = NULL;
     if (val_is_string(args[0]))
         name = val_get_string(args[0])->data;
@@ -570,14 +563,14 @@ static Val vm_is_builtin_module_fn(VM *vm, Val *args, int nargs) {
  * NOTE: Must strdup the source — parse_source allocates many heap
  * objects which can trigger GC. The moving GC invalidates the raw
  * pointer into the original HeapString. */
-static Val vm_parse_source_fn(VM *vm, Val *args, int nargs) {
+static Val vm_parse_source_fn(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]))
         return val_nil();
     const char *src = val_get_string(args[0])->data;
     char *copy = strdup(src);
     if (!copy)
         return val_nil();
-    Val result = parse_source(vm, tls_current_proc, copy);
+    Val result = parse_source(vm, p, copy);
     free(copy);
     return result;
 }
@@ -644,8 +637,7 @@ static int tok_kind_of_ctor(VM *vm, int ctor_idx) {
     return vm_intern_symbol(vm, buf);
 }
 
-static Val vm_make_tok_vec_fn(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val vm_make_tok_vec_fn(VM *vm, Proc *p, Val *args, int nargs) {
     if (!p || !val_is_pair(args[0]))
         return val_nil();
 
@@ -694,58 +686,62 @@ static Val vm_make_tok_vec_fn(VM *vm, Val *args, int nargs) {
     return ta_resource_new(p, vec, tokvec_dtor);
 }
 
-static Val vm_tok_type_fn(VM *vm, Val *args, int nargs) {
+/* tok_type / tok_val / tok_at 共同的前奏：开句柄、取 TokVec、取下标。
+ * 打不开（错型 / 已随投递移交 / 已释放）或越界都返回 NULL，兜底值各自由
+ * 调用方给（'eof / nil / 0）。 */
+static TokVec *tok_lookup(Proc *p, Val *args, int *pos) {
     HeapResource *r;
-    if (ta_resource_open(args[0], &r, -1) != 0)
-        return val_nil(); /* 错型 / 已随投递移交 / 已释放 */
+    if (ta_resource_open(args[0], p, &r, -1) != 0)
+        return NULL;
     TokVec *vec = r->res->ptr;
-    int pos = (int)val_get_int(args[1]);
-    if (pos < 0 || pos >= vec->len) {
+    *pos = (int)val_get_int(args[1]);
+    if (*pos < 0 || *pos >= vec->len)
+        return NULL;
+    return vec;
+}
+
+static Val vm_tok_type_fn(VM *vm, Proc *p, Val *args, int nargs) {
+    int pos;
+    TokVec *vec = tok_lookup(p, args, &pos);
+    if (!vec)
         return val_symbol((uint32_t)vm_intern_symbol(vm, "eof"));
-    }
     return val_symbol((uint32_t)vec->entries[pos].type_idx);
 }
 
-static Val vm_tok_val_fn(VM *vm, Val *args, int nargs) {
-    HeapResource *r;
-    if (ta_resource_open(args[0], &r, -1) != 0)
-        return val_nil();
-    TokVec *vec = r->res->ptr;
-    int pos = (int)val_get_int(args[1]);
-    if (pos < 0 || pos >= vec->len)
+static Val vm_tok_val_fn(VM *vm, Proc *p, Val *args, int nargs) {
+    int pos;
+    TokVec *vec = tok_lookup(p, args, &pos);
+    if (!vec)
         return val_nil();
     TokEntry *e = &vec->entries[pos];
     switch (e->val_type) {
     case 1:
         return val_int(e->num);
     case 2:
-        return val_string(tls_current_proc, e->str, (int)strlen(e->str));
+        return val_string(p, e->str, (int)strlen(e->str));
     default:
         return val_nil();
     }
 }
 
-static Val vm_tok_at_fn(VM *vm, Val *args, int nargs) {
-    HeapResource *r;
-    if (ta_resource_open(args[0], &r, -1) != 0)
-        return val_int(0);
-    TokVec *vec = r->res->ptr;
-    int pos = (int)val_get_int(args[1]);
-    if (pos < 0 || pos >= vec->len)
-        return val_int(0); /* out of range: 0 == "start of file" */
+static Val vm_tok_at_fn(VM *vm, Proc *p, Val *args, int nargs) {
+    int pos;
+    TokVec *vec = tok_lookup(p, args, &pos);
+    if (!vec)
+        return val_int(0); /* 打不开 / 越界：0 == "start of file" */
     return val_int(vec->entries[pos].at);
 }
 
-static Val vm_free_tok_vec_fn(VM *vm, Val *args, int nargs) {
+static Val vm_free_tok_vec_fn(VM *vm, Proc *p, Val *args, int nargs) {
     HeapResource *r;
-    if (ta_resource_open(args[0], &r, 1) != 0)
+    if (ta_resource_open(args[0], p, &r, 1) != 0)
         return val_nil();   /* 错型 / 已移交：没有可释放的 */
     ta_resource_release(r); /* 已释放时是 no-op：重复 close 幂等 */
     return val_nil();
 }
 
 /* vm.time_ms() -> int — monotonic clock in milliseconds (rate limiting etc). */
-static Val vm_time_ms_fn(VM *vm, Val *args, int nargs) {
+static Val vm_time_ms_fn(VM *vm, Proc *p, Val *args, int nargs) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return val_int((int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
@@ -754,7 +750,7 @@ static Val vm_time_ms_fn(VM *vm, Val *args, int nargs) {
 /* vm.time_us() -> int — monotonic clock in microseconds. TA ints are
  * int48 (±~1.4e14): µs since boot stays in range for ~4.5 years, while
  * raw ns would overflow after ~1.6 days of machine uptime. */
-static Val vm_time_us_fn(VM *vm, Val *args, int nargs) {
+static Val vm_time_us_fn(VM *vm, Proc *p, Val *args, int nargs) {
     return val_int((int64_t)(prof_now_ns() / 1000));
 }
 

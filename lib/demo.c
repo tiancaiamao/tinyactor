@@ -3,7 +3,7 @@
  *
  * 照着这个文件写你自己的 C 模块：
  *   1. #include "ta.h"（公开 API：Val、Proc、val_* 构造/访问器）
- *   2. 每个函数签名：static Val fn(VM *vm, Val *args, int nargs)
+ *   2. 每个函数签名：static Val fn(VM *vm, Proc *p, Val *args, int nargs)
  *   3. 导出一个 TaFunc 表：{名字, 函数, 参数个数}，-1 = 变参
  *   4. 实现 void vm_load_self(VM *vm)，调用 vm_register_module
  *
@@ -22,7 +22,7 @@
 #include <string.h>
 
 /* 模式 1：纯 int 运算 —— 不分配堆对象，GC 无感知，最简单。 */
-static Val demo_double(VM *vm, Val *args, int nargs) {
+static Val demo_double(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_int(args[0]))
         return val_nil(); /* 错误约定：失败返回 nil */
     return val_int(val_get_int(args[0]) * 2);
@@ -31,8 +31,7 @@ static Val demo_double(VM *vm, Val *args, int nargs) {
 /* 模式 2：构造 string —— 单次分配即返回，无需手动 root。
  * val_string 把内容拷贝进 proc heap（由 GC 管理）；我们自己
  * malloc 的临时 buffer 必须自己 free。 */
-static Val demo_greet(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc; /* 当前执行 proc（GC 根） */
+static Val demo_greet(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]))
         return val_nil();
     HeapString *name = val_get_string(args[0]);
@@ -53,8 +52,7 @@ static Val demo_greet(VM *vm, Val *args, int nargs) {
  * gc_pending，要等结果压回 TA 栈后才补收）；且 actor arena 一旦持有对象就不再
  * realloc（见 docs/c-module.md §3）。第二步分配在前一步之后，所以「先算后分」的
  * 坑不会出现。 */
-static Val demo_list(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val demo_list(VM *vm, Proc *p, Val *args, int nargs) {
     return val_pair(p, args[0], val_pair(p, args[1], val_nil()));
 }
 

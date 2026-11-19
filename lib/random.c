@@ -92,7 +92,7 @@ static void rng_seed_if_needed(void) {
     }
 }
 
-static Val rand_srand(VM *vm, Val *args, int nargs) {
+static Val rand_srand(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_int(args[0]))
         return val_int(-1);
     uint64_t s = (uint64_t)val_get_int(args[0]);
@@ -103,7 +103,7 @@ static Val rand_srand(VM *vm, Val *args, int nargs) {
     return val_nil();
 }
 
-static Val rand_rand_int(VM *vm, Val *args, int nargs) {
+static Val rand_rand_int(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_int(args[0]))
         return val_int(-1);
     int64_t n = val_get_int(args[0]);
@@ -122,7 +122,7 @@ static Val rand_rand_int(VM *vm, Val *args, int nargs) {
     return val_int((int64_t)(r % un));
 }
 
-static Val rand_rand_float(VM *vm, Val *args, int nargs) {
+static Val rand_rand_float(VM *vm, Proc *p, Val *args, int nargs) {
     pthread_mutex_lock(&rng_lock);
     rng_seed_if_needed();
     uint64_t r = rng_next();

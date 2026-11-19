@@ -23,7 +23,6 @@ int main(void) {
     VM *vm = vm_new();
     vm_register_str_module(vm);
     Proc *p = proc_new(vm);
-    tls_current_proc = p;
 
     int cidx = vm_find_cfunc(vm, "str.concat");
     char big[64];
@@ -44,7 +43,7 @@ int main(void) {
     Val args[2];
     args[0] = proc_peek(p, N - 1);
     args[1] = val_string(p, big, (int)strlen(big));
-    Val joined = vm->cfuncs[cidx].fn(vm, args, 2);
+    Val joined = vm->cfuncs[cidx].fn(vm, p, args, 2);
 
     /* Pop back and verify each survived. */
     int bad = 0;

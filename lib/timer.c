@@ -123,7 +123,8 @@ static void timer_insert(TimerState *ts, Timer *t) {
     *pp = t;
 }
 
-static int64_t timer_register(VM *vm, int target_pid, int64_t ms, int64_t interval_ms, Val msg) {
+static int64_t timer_register(VM *vm, Proc *caller, int target_pid, int64_t ms, int64_t interval_ms,
+                              Val msg) {
     TimerState *ts = get_timer_state(vm);
     if (!ts)
         return 0;
@@ -133,7 +134,7 @@ static int64_t timer_register(VM *vm, int target_pid, int64_t ms, int64_t interv
      * 「定时后给别人用」，发 pid/符号让接收方自己创建资源。cfunc 上下文
      * 不能自己 die：置 cfunc_die 由 vm.c 统一收口，这里返回 0（结果丢弃）。*/
     if (val_has_resource(msg)) {
-        tls_current_proc->cfunc_die = "resource";
+        caller->cfunc_die = "resource";
         return 0;
     }
     /* Snapshot the message before it can be collected with the caller's
@@ -200,7 +201,7 @@ void timer_fire_expired(VM *vm, int64_t now_ms) {
          * observed dead this timer can never deliver again. */
         int target_dead = (target == NULL) || atomic_load(&target->state) == PROC_DEAD;
         if (!target_dead)
-            mbox_deliver(vm, target, t->frag->root);
+            mbox_deliver(vm, NULL, target, t->frag->root); /* fire 在 poller 线程：无 sender */
 
         pthread_mutex_lock(&ts->lock);
         ts->firing = NULL;
@@ -223,16 +224,16 @@ void timer_fire_expired(VM *vm, int64_t now_ms) {
  * C functions — statically registered ("timer" module, like net)
  * ============================================================ */
 
-static Val timer_c_send_after(VM *vm, Val *args, int nargs) {
+static Val timer_c_send_after(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_int(args[1]))
         return val_int(0);
     int64_t ms = val_get_int(args[1]);
     if (ms < 0)
         ms = 0;
-    return val_int(timer_register(vm, (int)val_get_pid(args[0]), ms, 0, args[2]));
+    return val_int(timer_register(vm, p, (int)val_get_pid(args[0]), ms, 0, args[2]));
 }
 
-static Val timer_c_send_interval(VM *vm, Val *args, int nargs) {
+static Val timer_c_send_interval(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_int(args[1]))
         return val_int(0);
     int64_t ms = val_get_int(args[1]);
@@ -241,10 +242,10 @@ static Val timer_c_send_interval(VM *vm, Val *args, int nargs) {
      * deliver exactly once instead of repeating. */
     if (ms < 1)
         ms = 1;
-    return val_int(timer_register(vm, (int)val_get_pid(args[0]), ms, ms, args[2]));
+    return val_int(timer_register(vm, p, (int)val_get_pid(args[0]), ms, ms, args[2]));
 }
 
-static Val timer_c_cancel(VM *vm, Val *args, int nargs) {
+static Val timer_c_cancel(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_int(args[0]))
         return val_int(0);
     int64_t id = val_get_int(args[0]);

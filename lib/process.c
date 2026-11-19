@@ -175,7 +175,7 @@ static void proc_free_argv(char **av) {
  * and its resource are created BEFORE the fork, so every failure path
  * just releases — the dtor sees sentinel-cleared fields and only frees
  * the state. */
-static Val process_raw_run(VM *vm, Val *args, int nargs) {
+static Val process_raw_run(VM *vm, Proc *p, Val *args, int nargs) {
     char **av = proc_build_argv(vm, args[0], args[1]);
     if (!av)
         return val_int(-1);
@@ -196,7 +196,7 @@ static Val process_raw_run(VM *vm, Val *args, int nargs) {
     ps->pid = -1;
     ps->in_fd = -1;
     ps->out_fd = -1;
-    Val res = ta_resource_new(tls_current_proc, ps, proc_dtor);
+    Val res = ta_resource_new(p, ps, proc_dtor);
     HeapResource *hr = val_get_resource(res);
 
     int in_pipe[2], out_pipe[2];
@@ -257,17 +257,17 @@ static Val process_raw_run(VM *vm, Val *args, int nargs) {
     return res;
 }
 
-static Val process_raw_stdin_w(VM *vm, Val *args, int nargs) {
+static Val process_raw_stdin_w(VM *vm, Proc *p, Val *args, int nargs) {
     HeapResource *r;
-    int st = ta_resource_open(args[0], &r, -1);
+    int st = ta_resource_open(args[0], p, &r, -1);
     if (st < 0)
         return val_int(st);
     return val_int(((ChildState *)r->res->ptr)->in_fd);
 }
 
-static Val process_raw_stdout_r(VM *vm, Val *args, int nargs) {
+static Val process_raw_stdout_r(VM *vm, Proc *p, Val *args, int nargs) {
     HeapResource *r;
-    int st = ta_resource_open(args[0], &r, -1);
+    int st = ta_resource_open(args[0], p, &r, -1);
     if (st < 0)
         return val_int(st);
     return val_int(((ChildState *)r->res->ptr)->out_fd);
@@ -279,9 +279,9 @@ static Val process_raw_stdout_r(VM *vm, Val *args, int nargs) {
  * normal exit yields its code (>= 0); -1 covers released handles,
  * waitpid errors, and abnormal termination. The blocking reap runs with
  * no lock held — a slow child cannot stall anyone else's spawns. */
-static Val process_raw_wait(VM *vm, Val *args, int nargs) {
+static Val process_raw_wait(VM *vm, Proc *p, Val *args, int nargs) {
     HeapResource *r;
-    int st = ta_resource_open(args[0], &r, -1);
+    int st = ta_resource_open(args[0], p, &r, -1);
     if (st < 0)
         return val_int(st);
     ChildState *ps = (ChildState *)r->res->ptr;
@@ -309,10 +309,10 @@ static Val process_raw_wait(VM *vm, Val *args, int nargs) {
  * every alias of the handle (release clears the header's payload pointer);
  * a stale copy — owned by another actor — returns -2 and can never close
  * the receiver's pipes or reap the receiver's child. */
-static Val process_raw_close(VM *vm, Val *args, int nargs) {
+static Val process_raw_close(VM *vm, Proc *p, Val *args, int nargs) {
     HeapResource *r;
     /* closed_code = 1: double close / wait-then-close is a successful close. */
-    int st = ta_resource_open(args[0], &r, 1);
+    int st = ta_resource_open(args[0], p, &r, 1);
     if (st != 0)
         return val_int(st);
     ChildState *ps = (ChildState *)r->res->ptr;
@@ -339,9 +339,9 @@ static Val process_raw_close(VM *vm, Val *args, int nargs) {
  * comment), so this is the ONLY way to signal eof — a net.close() on
  * the borrowed fd would close a number the module still tracks.
  * Returns 1 on success, -1 when stdin is already closed / released. */
-static Val process_raw_close_stdin(VM *vm, Val *args, int nargs) {
+static Val process_raw_close_stdin(VM *vm, Proc *p, Val *args, int nargs) {
     HeapResource *r;
-    int st = ta_resource_open(args[0], &r, -1);
+    int st = ta_resource_open(args[0], p, &r, -1);
     if (st < 0)
         return val_int(st);
     ChildState *ps = (ChildState *)r->res->ptr;

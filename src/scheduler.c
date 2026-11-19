@@ -187,13 +187,13 @@ static void vm_wake_proc(VM *vm, Proc *p) {
  * 跑时（state 已回到 RUNNING 但那段 C 栈还没收尾）只挂一个唤醒请求，由持有
  * 者发布 —— 「never two threads running the same proc」靠这一层 + 出队处的
  * CAS 认领，而不是靠这里的锁。 */
-int mbox_deliver(VM *vm, Proc *target, Val msg) {
+int mbox_deliver(VM *vm, Proc *sender, Proc *target, Val msg) {
     int has_res = 0;
     int need = frag_calc_size(msg, &has_res);
     /* 资源收口校验（docs/c-resource-design.md §4）：self-send / 非属主 /
      * 重复 payload / 无 proc 上下文（poller 线程）→ 违规：消息不入队、
      * 归属不动，返回 -1 由调用方映射成进程隔离错误（LB_SEND）。 */
-    if (has_res && resource_send_check(msg, tls_current_proc, target) != 0)
+    if (has_res && resource_send_check(msg, sender, target) != 0)
         return -1;
     MsgFragment *frag = (MsgFragment *)malloc(sizeof(MsgFragment) + need);
     if (!frag)
@@ -233,22 +233,51 @@ int mbox_deliver(VM *vm, Proc *target, Val msg) {
     return 0;
 }
 
-/* Detach the head fragment and rebuild its tree on p's own heap.
- * Caller guarantees p owns its execution context (no heap races). */
-Val mbox_pop(Proc *p) {
-    pthread_mutex_lock(&p->mbox_lock);
+/* 摘下邮箱头的 fragment（*调用方须已持 mbox_lock*）。三处摘头（pop /
+ * pop_cfunc / recv_commit）共用这一份指针手术：漏改 tail 或漏减 count
+ * 就是邮箱错乱，这种手术不该有第二份。 */
+MsgFragment *mbox_detach_head_locked(Proc *p) {
     MsgFragment *frag = p->mbox_frag_head;
     p->mbox_frag_head = frag->next;
     if (!p->mbox_frag_head)
         p->mbox_frag_tail = NULL;
     p->mbox_count--;
+    return frag;
+}
+
+static MsgFragment *mbox_detach_head(Proc *p) {
+    pthread_mutex_lock(&p->mbox_lock);
+    MsgFragment *frag = mbox_detach_head_locked(p);
     pthread_mutex_unlock(&p->mbox_lock);
+    return frag;
+}
+
+/* 丢弃邮箱里未投递的 fragment，先兑底释放其中的资源（§6.3）—— 归属是
+ * 死者/被 teardown 者，没人再会 close 它们。proc_die 与 vm_free 共用。 */
+void mbox_drain(Proc *p) {
+    pthread_mutex_lock(&p->mbox_lock);
+    MsgFragment *frag = p->mbox_frag_head;
+    while (frag) {
+        MsgFragment *next = frag->next;
+        resource_release_tree(frag->root, p->pid);
+        free(frag);
+        frag = next;
+    }
+    p->mbox_frag_head = p->mbox_frag_tail = NULL;
+    p->mbox_count = 0;
+    pthread_mutex_unlock(&p->mbox_lock);
+}
+
+/* Detach the head fragment and rebuild its tree on p's own heap.
+ * Caller guarantees p owns its execution context (no heap races). */
+Val mbox_pop(Proc *p) {
+    MsgFragment *frag = mbox_detach_head(p);
 
     /* The message may exceed the arena's free space, and the gate-closed
      * deep copy below cannot grow the arena — reserve first (gate is open
      * here, so growth is a safe collection). */
     proc_reserve_heap(p, val_calc_heap_size(frag->root));
-    Val v = val_deep_copy(p, frag->root, NULL); /* 校验已在入队时做过（§4） */
+    Val v = val_deep_copy(p, p, frag->root, NULL); /* 校验已在入队时做过（§4） */
     free(frag);
     return v;
 }
@@ -257,15 +286,8 @@ Val mbox_pop(Proc *p) {
  * owns the copy, so no reserve/collection may run here. do_ccall promotes
  * the returned Val into the heap when the callback returns. */
 Val mbox_pop_cfunc(Proc *p) {
-    pthread_mutex_lock(&p->mbox_lock);
-    MsgFragment *frag = p->mbox_frag_head;
-    p->mbox_frag_head = frag->next;
-    if (!p->mbox_frag_head)
-        p->mbox_frag_tail = NULL;
-    p->mbox_count--;
-    pthread_mutex_unlock(&p->mbox_lock);
-
-    Val v = val_deep_copy(p, frag->root, NULL);
+    MsgFragment *frag = mbox_detach_head(p);
+    Val v = val_deep_copy(p, p, frag->root, NULL);
     free(frag);
     return v;
 }
@@ -398,7 +420,7 @@ void proc_frame_init(VM *vm, Proc *p, int fnid, Val fnval) {
  * 返回 0 时 out_* 有效；返回 -1 = 收口违规（docs/c-resource-design.md §4：
  * 闭包捕获了非属主资源，或同一资源捕获两次）—— 子已 proc_die、从未入队，
  * 按正常退出静默收场，报告由调用方按自己的协议出（crash 报告归真凶：父）。 */
-int proc_spawn_begin(VM *vm, Val clos, Proc **out_np, Val *out_owned, int *out_fid) {
+int proc_spawn_begin(VM *vm, Proc *parent, Val clos, Proc **out_np, Val *out_owned, int *out_fid) {
     long fid = val_closure_entry(clos);
     if (fid < 0)
         fatal("spawn on non-closure");
@@ -410,7 +432,7 @@ int proc_spawn_begin(VM *vm, Val clos, Proc **out_np, Val *out_owned, int *out_f
      * 先 reserve：新 arena 很小，关门拷贝不能增长它。 */
     proc_reserve_heap(np, val_calc_heap_size(clos));
     int res_err = 0;
-    Val owned = val_deep_copy(np, clos, &res_err);
+    Val owned = val_deep_copy(parent, np, clos, &res_err);
     if (res_err) {
         proc_die(vm, np, val_nil());
         return -1;
@@ -570,24 +592,13 @@ void proc_die(VM *vm, Proc *p, Val reason) {
          * which serializes into a malloc'd fragment and wakes the watcher
          * under its mbox_lock if blocked on recv. */
         Val msg = down_msg_build(vm, p, p->watcher_refs[i], val_pid(p->pid), reason);
-        mbox_deliver(vm, w, msg);
+        mbox_deliver(vm, p, w, msg);
     }
     proc_gc_leave(p);
     pthread_mutex_unlock(&vm->procs_lock);
 
-    /* Free all undelivered mailbox fragments；其中的资源归属是死者 →
-     * 先兑底释放（§6.3），与并发发送方由同一把 mbox_lock 串行。 */
-    pthread_mutex_lock(&p->mbox_lock);
-    MsgFragment *frag = p->mbox_frag_head;
-    while (frag) {
-        MsgFragment *next = frag->next;
-        resource_release_tree(frag->root, p->pid);
-        free(frag);
-        frag = next;
-    }
-    p->mbox_frag_head = p->mbox_frag_tail = NULL;
-    p->mbox_count = 0;
-    pthread_mutex_unlock(&p->mbox_lock);
+    /* 未投递的消息连同其中的资源一起还掉（与并发发送方由 mbox_lock 串行） */
+    mbox_drain(p);
 
     /* Release heap memory now that DOWN messages have been sent.
      * watchers/watcher_refs are NOT freed here — another thread may be
@@ -624,7 +635,7 @@ void proc_die(VM *vm, Proc *p, Val reason) {
 /* Register a published wait. Proc storage is retained until vm_free, so
  * poll snapshots can safely hold Proc pointers while a concurrent wake
  * removes the registration. */
-static void wait_register(VM *vm, Proc *p) {
+void vm_wait_register(VM *vm, Proc *p) {
     int needs_wakeup;
     pthread_mutex_lock(&vm->wait_lock);
     if (!p->wait_registered) {
@@ -665,8 +676,6 @@ static void drain_wake_pipe(VM *vm) {
     while (read(vm->wake_pipe_r, buf, sizeof buf) > 0) {
     }
 }
-
-void vm_wait_register(VM *vm, Proc *p) { wait_register(vm, p); }
 
 int vm_wait_count(VM *vm) { return atomic_load(&vm->wait_count); }
 
@@ -875,7 +884,7 @@ void vm_poller_stop(VM *vm) {
 
 /* 池 worker 的启动参数：VM + entry pid。没有 per-worker 可变态（老版的
  * WorkerCtx.current_proc 只在 force-stop 路径写、无人读，已丢）—— proc
- * 的恢复态在 Proc 里（D2），当前 proc 走 tls_current_proc。 */
+ * 的恢复态在 Proc 里（D2），当前 proc 由调用方显式传入。 */
 typedef struct {
     VM *vm;
     int entry_pid;

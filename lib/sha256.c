@@ -42,8 +42,8 @@
 #define STATE_BYTES ((int)sizeof(SHA256_CTX))
 
 /* state_value: the state as a TA value (bytes the caller owns). */
-static Val state_value(const SHA256_CTX *c) {
-    return val_bytes(tls_current_proc, (const uint8_t *)c, STATE_BYTES);
+static Val state_value(Proc *p, const SHA256_CTX *c) {
+    return val_bytes(p, (const uint8_t *)c, STATE_BYTES);
 }
 
 /* state_load: the state out of a TA value. 0 when the value is not a
@@ -60,7 +60,7 @@ static int state_load(Val v, SHA256_CTX *out) {
 }
 
 /* hex: the digest as 64 lowercase hex chars (SHA-256 is 32 bytes). */
-static Val sha_hex(const unsigned char *md, unsigned int mdlen) {
+static Val sha_hex(Proc *p, const unsigned char *md, unsigned int mdlen) {
     const char digits[] = "0123456789abcdef";
     char hex[65];
     if (mdlen != 32)
@@ -70,19 +70,19 @@ static Val sha_hex(const unsigned char *md, unsigned int mdlen) {
         hex[2 * i + 1] = digits[md[i] & 0xf];
     }
     hex[64] = '\0';
-    return val_string(tls_current_proc, hex, 64);
+    return val_string(p, hex, 64);
 }
 
 /* raw_new: a fresh state — the digest of the empty message. */
-static Val sha_raw_new(VM *vm, Val *args, int nargs) {
+static Val sha_raw_new(VM *vm, Proc *p, Val *args, int nargs) {
     SHA256_CTX c;
     SHA256_Init(&c);
-    return state_value(&c);
+    return state_value(p, &c);
 }
 
 /* raw_update_at: the state after hashing data[off, off+len). The bytes
  * are read in place — the document is never copied. */
-static Val sha_raw_update_at(VM *vm, Val *args, int nargs) {
+static Val sha_raw_update_at(VM *vm, Proc *p, Val *args, int nargs) {
     if (nargs < 4 || !val_is_int(args[2]) || !val_is_int(args[3]))
         return val_int(-1);
     SHA256_CTX c;
@@ -96,11 +96,11 @@ static Val sha_raw_update_at(VM *vm, Val *args, int nargs) {
     if (off < 0 || len < 0 || off + len > (int64_t)s->len)
         return val_int(-1);
     SHA256_Update(&c, s->data + off, (size_t)len);
-    return state_value(&c);
+    return state_value(p, &c);
 }
 
 /* raw_update: the state after hashing the whole string. */
-static Val sha_raw_update(VM *vm, Val *args, int nargs) {
+static Val sha_raw_update(VM *vm, Proc *p, Val *args, int nargs) {
     if (nargs < 2 || !val_is_string(args[1]))
         return val_int(-1);
     HeapString *s = val_get_string(args[1]);
@@ -109,23 +109,23 @@ static Val sha_raw_update(VM *vm, Val *args, int nargs) {
     rest[1] = args[1];
     rest[2] = val_int(0);
     rest[3] = val_int(s->len);
-    return sha_raw_update_at(vm, rest, 4);
+    return sha_raw_update_at(vm, p, rest, 4);
 }
 
 /* raw_final: the digest of everything hashed so far. The state is a
  * value, so finalising does not consume it: finalising twice gives the
  * same digest. */
-static Val sha_raw_final(VM *vm, Val *args, int nargs) {
+static Val sha_raw_final(VM *vm, Proc *p, Val *args, int nargs) {
     SHA256_CTX c;
     if (!state_load(args[0], &c))
         return val_int(-1);
     unsigned char md[SHA256_DIGEST_LENGTH];
     SHA256_Final(md, &c);
-    return sha_hex(md, sizeof md);
+    return sha_hex(p, md, sizeof md);
 }
 
 /* raw_digest: the digest of one buffer — no state at all. */
-static Val sha_raw_digest(VM *vm, Val *args, int nargs) {
+static Val sha_raw_digest(VM *vm, Proc *p, Val *args, int nargs) {
     if (nargs < 1 || !val_is_string(args[0]))
         return val_int(-1);
     HeapString *s = val_get_string(args[0]);
@@ -134,7 +134,7 @@ static Val sha_raw_digest(VM *vm, Val *args, int nargs) {
     SHA256_Update(&c, s->data, (size_t)s->len);
     unsigned char md[SHA256_DIGEST_LENGTH];
     SHA256_Final(md, &c);
-    return sha_hex(md, sizeof md);
+    return sha_hex(p, md, sizeof md);
 }
 
 static TaFunc sha256_funcs[] = {

@@ -70,7 +70,7 @@ static int buf_ensure(BufState *b, int add) {
     return 1;
 }
 
-static Val buffer_raw_new(VM *vm, Val *args, int nargs) {
+static Val buffer_raw_new(VM *vm, Proc *p, Val *args, int nargs) {
     /* No table limit anymore: a new payload is just a malloc, freed again by
      * buffer_raw_close (ta_resource_release). OOM aborts like every heap
      * constructor (val_pair & co). */
@@ -80,12 +80,12 @@ static Val buffer_raw_new(VM *vm, Val *args, int nargs) {
     b->data = NULL;
     b->len = 0;
     b->cap = 0;
-    return ta_resource_new(tls_current_proc, b, buf_dtor);
+    return ta_resource_new(p, b, buf_dtor);
 }
 
-static Val buffer_raw_push_str(VM *vm, Val *args, int nargs) {
+static Val buffer_raw_push_str(VM *vm, Proc *p, Val *args, int nargs) {
     HeapResource *r;
-    int st = ta_resource_open(args[0], &r, -1);
+    int st = ta_resource_open(args[0], p, &r, -1);
     if (st < 0)
         return val_int(st);
     if (!val_is_string(args[1]))
@@ -99,9 +99,9 @@ static Val buffer_raw_push_str(VM *vm, Val *args, int nargs) {
     return val_int(b->len);
 }
 
-static Val buffer_raw_push_byte(VM *vm, Val *args, int nargs) {
+static Val buffer_raw_push_byte(VM *vm, Proc *p, Val *args, int nargs) {
     HeapResource *r;
-    int st = ta_resource_open(args[0], &r, -1);
+    int st = ta_resource_open(args[0], p, &r, -1);
     if (st < 0)
         return val_int(st);
     int64_t n = val_get_int(args[1]);
@@ -116,27 +116,27 @@ static Val buffer_raw_push_byte(VM *vm, Val *args, int nargs) {
 /* Snapshot as a TA string. The buffer keeps its contents. b->data is
  * malloc'd (GC-invisible), so the copy is safe even though val_string
  * allocates: the source never moves. */
-static Val buffer_raw_to_string(VM *vm, Val *args, int nargs) {
+static Val buffer_raw_to_string(VM *vm, Proc *p, Val *args, int nargs) {
     HeapResource *r;
-    int st = ta_resource_open(args[0], &r, -1);
+    int st = ta_resource_open(args[0], p, &r, -1);
     if (st < 0)
         return val_int(st);
     BufState *b = (BufState *)r->res->ptr;
-    return val_string(tls_current_proc, (const char *)b->data, b->len);
+    return val_string(p, (const char *)b->data, b->len);
 }
 
 /* Substring [start, end), codepoint (== byte in v1) indices.
  * Bounds are pre-validated in TA; a bad range here still returns -1. */
-static Val buffer_raw_slice(VM *vm, Val *args, int nargs) {
+static Val buffer_raw_slice(VM *vm, Proc *p, Val *args, int nargs) {
     HeapResource *r;
-    int st = ta_resource_open(args[0], &r, -1);
+    int st = ta_resource_open(args[0], p, &r, -1);
     if (st < 0)
         return val_int(st);
     BufState *b = (BufState *)r->res->ptr;
     int64_t start = val_get_int(args[1]);
     int64_t end = val_get_int(args[2]);
     if (start >= 0 && end <= b->len && start <= end)
-        return val_string(tls_current_proc, (const char *)b->data + start, (int)(end - start));
+        return val_string(p, (const char *)b->data + start, (int)(end - start));
     return val_int(-1);
 }
 
@@ -144,19 +144,19 @@ static Val buffer_raw_slice(VM *vm, Val *args, int nargs) {
  * returns 1 again (the release clears the header's payload pointer, so every
  * alias of this header hits the same no-op). A stale copy — sent away, owned
  * by another actor — returns -2 and can never free the receiver's storage. */
-static Val buffer_raw_close(VM *vm, Val *args, int nargs) {
+static Val buffer_raw_close(VM *vm, Proc *p, Val *args, int nargs) {
     HeapResource *r;
     /* closed_code = 1: an already-released buffer is a successful close. */
-    int st = ta_resource_open(args[0], &r, 1);
+    int st = ta_resource_open(args[0], p, &r, 1);
     if (st != 0)
         return val_int(st);
     ta_resource_release(r); /* no-op when already released */
     return val_int(1);
 }
 
-static Val buffer_raw_length(VM *vm, Val *args, int nargs) {
+static Val buffer_raw_length(VM *vm, Proc *p, Val *args, int nargs) {
     HeapResource *r;
-    int st = ta_resource_open(args[0], &r, -1);
+    int st = ta_resource_open(args[0], p, &r, -1);
     if (st < 0)
         return val_int(st);
     return val_int(((BufState *)r->res->ptr)->len);

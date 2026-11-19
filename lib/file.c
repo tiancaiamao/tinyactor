@@ -40,8 +40,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-static Val file_read(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val file_read(VM *vm, Proc *p, Val *args, int nargs) {
 
     if (!val_is_string(args[0]))
         return val_nil();
@@ -76,7 +75,7 @@ static Val file_read(VM *vm, Val *args, int nargs) {
     return result;
 }
 
-static Val file_write(VM *vm, Val *args, int nargs) {
+static Val file_write(VM *vm, Proc *p, Val *args, int nargs) {
 
     if (!val_is_string(args[0]) || !val_is_string(args[1]))
         return val_int(-1);
@@ -93,7 +92,7 @@ static Val file_write(VM *vm, Val *args, int nargs) {
     return val_int(ok ? 1 : 0);
 }
 
-static Val file_exists(VM *vm, Val *args, int nargs) {
+static Val file_exists(VM *vm, Proc *p, Val *args, int nargs) {
 
     if (!val_is_string(args[0]))
         return val_int(0);
@@ -116,7 +115,7 @@ static int make_dir(const char *path) {
     return S_ISDIR(st.st_mode) ? 1 : 0;
 }
 
-static Val file_mkdir_p(VM *vm, Val *args, int nargs) {
+static Val file_mkdir_p(VM *vm, Proc *p, Val *args, int nargs) {
 
     if (!val_is_string(args[0]))
         return val_int(-1);
@@ -159,7 +158,7 @@ static Val file_mkdir_p(VM *vm, Val *args, int nargs) {
 /* Directory entries as a TA list of strings; "." and ".." are skipped.
  * Entries arrive in readdir order (unsorted) — lib/fs.ta / list.sort own
  * ordering. -1 = hard error (not a string, opendir failed). */
-static Val file_list_dir(VM *vm, Val *args, int nargs) {
+static Val file_list_dir(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]))
         return val_int(-1);
     HeapString *hs = val_get_string(args[0]);
@@ -168,7 +167,6 @@ static Val file_list_dir(VM *vm, Val *args, int nargs) {
     if (!d)
         return val_int(-1);
 
-    Proc *p = tls_current_proc;
     Val list = val_nil();
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
@@ -181,7 +179,7 @@ static Val file_list_dir(VM *vm, Val *args, int nargs) {
 }
 
 /* remove(2) deletes a file or an empty directory. 1 ok, -1 hard error. */
-static Val file_remove(VM *vm, Val *args, int nargs) {
+static Val file_remove(VM *vm, Proc *p, Val *args, int nargs) {
 
     if (!val_is_string(args[0]))
         return val_int(-1);
@@ -189,7 +187,7 @@ static Val file_remove(VM *vm, Val *args, int nargs) {
     return val_int(remove(hs->data) == 0 ? 1 : -1);
 }
 
-static Val file_rename(VM *vm, Val *args, int nargs) {
+static Val file_rename(VM *vm, Proc *p, Val *args, int nargs) {
 
     if (!val_is_string(args[0]) || !val_is_string(args[1]))
         return val_int(-1);
@@ -198,17 +196,17 @@ static Val file_rename(VM *vm, Val *args, int nargs) {
     return val_int(rename(old->data, new->data) == 0 ? 1 : -1);
 }
 
-static Val file_cwd(VM *vm, Val *args, int nargs) {
+static Val file_cwd(VM *vm, Proc *p, Val *args, int nargs) {
 
     char buf[4096];
     if (!getcwd(buf, sizeof(buf)))
         return val_int(-1);
-    return val_string(tls_current_proc, buf, (int)strlen(buf));
+    return val_string(p, buf, (int)strlen(buf));
 }
 
 /* stat(2) as [size_bytes, mtime_epoch_seconds] — the fixed-shape list
  * documented in the module header. -1 = hard error. */
-static Val file_stat(VM *vm, Val *args, int nargs) {
+static Val file_stat(VM *vm, Proc *p, Val *args, int nargs) {
 
     if (!val_is_string(args[0]))
         return val_int(-1);
@@ -217,7 +215,6 @@ static Val file_stat(VM *vm, Val *args, int nargs) {
     if (stat(hs->data, &st) != 0)
         return val_int(-1);
 
-    Proc *p = tls_current_proc;
     return val_pair(p, val_int((long)st.st_size),
                     val_pair(p, val_int((long)st.st_mtime), val_nil()));
 }

@@ -397,6 +397,25 @@ static void prof_print_summary(const VM *vm, const ProfState *ps) {
     free(fn_idx);
 }
 
+/* 写一份报告文件：拼 "<base>.<ext>" 后交给 dump。打不开只报到 stderr ——
+ * profiling 输出是可选产物，不该让整个运行失败。 */
+static void prof_write_file(const char *base, const char *ext, const VM *vm, const ProfState *ps,
+                            void (*dump)(FILE *f, const VM *vm, const ProfState *ps)) {
+    size_t n = strlen(base) + strlen(ext) + 2;
+    char *path = malloc(n);
+    if (!path)
+        return;
+    snprintf(path, n, "%s.%s", base, ext);
+    FILE *f = fopen(path, "w");
+    if (f) {
+        dump(f, vm, ps);
+        fclose(f);
+    } else {
+        fprintf(stderr, "profiler: cannot write %s\n", path);
+    }
+    free(path);
+}
+
 void prof_finish(VM *vm) {
     if (!vm->prof)
         return;
@@ -406,28 +425,8 @@ void prof_finish(VM *vm) {
 
     qsort(ps->entries, (size_t)ps->entry_count, sizeof(ProfEntry), cmp_entry_desc);
 
-    char *json_path = malloc(strlen(ps->out_base) + 6);
-    char *folded_path = malloc(strlen(ps->out_base) + 9);
-    if (json_path && folded_path) {
-        sprintf(json_path, "%s.json", ps->out_base);
-        sprintf(folded_path, "%s.folded", ps->out_base);
-        FILE *fj = fopen(json_path, "w");
-        if (fj) {
-            prof_write_json(fj, vm, ps);
-            fclose(fj);
-        } else {
-            fprintf(stderr, "profiler: cannot write %s\n", json_path);
-        }
-        FILE *ff = fopen(folded_path, "w");
-        if (ff) {
-            prof_write_folded(ff, vm, ps);
-            fclose(ff);
-        } else {
-            fprintf(stderr, "profiler: cannot write %s\n", folded_path);
-        }
-    }
-    free(json_path);
-    free(folded_path);
+    prof_write_file(ps->out_base, "json", vm, ps, prof_write_json);
+    prof_write_file(ps->out_base, "folded", vm, ps, prof_write_folded);
 
     prof_print_summary(vm, ps);
     pthread_mutex_unlock(&ps->lock);

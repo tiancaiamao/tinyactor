@@ -90,7 +90,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static Val str_char_at(VM *vm, Val *args, int nargs) {
+static Val str_char_at(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]))
         return val_int(-1);
     HeapString *hs = val_get_string(args[0]);
@@ -101,8 +101,7 @@ static Val str_char_at(VM *vm, Val *args, int nargs) {
 }
 
 /* str.chr: int -> string — inverse of str.char_at (byte value -> 1-char string). */
-static Val str_chr_fn(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val str_chr_fn(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_int(args[0]))
         return val_string(p, "", 0);
     int64_t c = val_get_int(args[0]);
@@ -113,14 +112,13 @@ static Val str_chr_fn(VM *vm, Val *args, int nargs) {
     return val_string(p, (const char *)buf, 1);
 }
 
-static Val str_length(VM *vm, Val *args, int nargs) {
+static Val str_length(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]))
         return val_int(0);
     return val_int(val_get_string(args[0])->len);
 }
 
-static Val str_substr(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val str_substr(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]))
         return val_string(p, "", 0);
     HeapString *hs = val_get_string(args[0]);
@@ -140,8 +138,7 @@ static Val str_substr(VM *vm, Val *args, int nargs) {
     return result;
 }
 
-static Val str_concat(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val str_concat(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]) || !val_is_string(args[1]))
         return val_string(p, "", 0);
     HeapString *a = val_get_string(args[0]);
@@ -158,7 +155,7 @@ static Val str_concat(VM *vm, Val *args, int nargs) {
     return result;
 }
 
-static Val str_to_int(VM *vm, Val *args, int nargs) {
+static Val str_to_int(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]))
         return val_int(0);
     HeapString *hs = val_get_string(args[0]);
@@ -188,15 +185,14 @@ static Val str_to_int(VM *vm, Val *args, int nargs) {
     return val_int(neg ? -val : val);
 }
 
-static Val str_from_int(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val str_from_int(VM *vm, Proc *p, Val *args, int nargs) {
     int64_t n = val_get_int(args[0]);
     char buf[32];
     int len = snprintf(buf, sizeof(buf), "%lld", (long long)n);
     return val_string(p, buf, len);
 }
 
-static Val str_eq_fn(VM *vm, Val *args, int nargs) {
+static Val str_eq_fn(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]) || !val_is_string(args[1]))
         return val_false();
     HeapString *a = val_get_string(args[0]);
@@ -206,7 +202,7 @@ static Val str_eq_fn(VM *vm, Val *args, int nargs) {
     return memcmp(a->data, b->data, (size_t)a->len) == 0 ? val_true() : val_false();
 }
 
-static Val str_index_of(VM *vm, Val *args, int nargs) {
+static Val str_index_of(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]) || !val_is_string(args[1]))
         return val_int(-1);
     HeapString *hay = val_get_string(args[0]);
@@ -237,7 +233,7 @@ static Val str_index_of(VM *vm, Val *args, int nargs) {
 /* str.index_of_char: first index >= start whose byte equals c (a byte
  * value), or -1. A plain scan primitive — callers compose it (e.g. the
  * JSON escaper takes the min over the bytes that need escaping). */
-static Val str_index_of_char(VM *vm, Val *args, int nargs) {
+static Val str_index_of_char(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]))
         return val_int(-1);
     HeapString *hs = val_get_string(args[0]);
@@ -254,7 +250,7 @@ static Val str_index_of_char(VM *vm, Val *args, int nargs) {
 /* str.index_of_ctrl: first index >= start of a control byte (< 0x20),
  * or -1. The range form of index_of_char — one pass instead of a
  * per-character TA loop. */
-static Val str_index_of_ctrl(VM *vm, Val *args, int nargs) {
+static Val str_index_of_ctrl(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]))
         return val_int(-1);
     HeapString *hs = val_get_string(args[0]);
@@ -270,7 +266,7 @@ static Val str_index_of_ctrl(VM *vm, Val *args, int nargs) {
 /* str.cmp: three-way byte-lexicographic compare (-1 / 0 / 1), the
  * dict/sort comparator shape. One C pass — the previous TA loop made
  * one char_at call per character per comparison (issue #402). */
-static Val str_cmp_fn(VM *vm, Val *args, int nargs) {
+static Val str_cmp_fn(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]) || !val_is_string(args[1]))
         return val_int(0);
     HeapString *a = val_get_string(args[0]);
@@ -287,7 +283,7 @@ static Val str_cmp_fn(VM *vm, Val *args, int nargs) {
     return val_int(a->len < b->len ? -1 : 1);
 }
 
-static Val str_to_sym(VM *vm, Val *args, int nargs) {
+static Val str_to_sym(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]))
         return val_nil();
     HeapString *s = val_get_string(args[0]);
@@ -299,7 +295,7 @@ static Val str_to_sym(VM *vm, Val *args, int nargs) {
     return val_symbol(vm_intern_symbol(vm, buf));
 }
 
-static Val sym_to_str(VM *vm, Val *args, int nargs) {
+static Val sym_to_str(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_symbol(args[0])) {
         /* Strict, like the cartype/cdrtype opcode errors: silently
          * returning nil let type errors surface far from their cause
@@ -315,7 +311,7 @@ static Val sym_to_str(VM *vm, Val *args, int nargs) {
         fprintf(stderr, "error: str.sym_to_str: symbol idx %u out of range\n", idx);
         return val_nil();
     }
-    return val_string(tls_current_proc, name, (int)strlen(name));
+    return val_string(p, name, (int)strlen(name));
 }
 
 /* ---------- split / join / trim / replace / case / pad / float / base ---------- */
@@ -326,8 +322,7 @@ static int is_ascii_space(unsigned char c) {
 }
 
 /* trim ASCII whitespace from both ends; wrong type -> "". */
-static Val str_trim(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val str_trim(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]))
         return val_string(p, "", 0);
     HeapString *hs = val_get_string(args[0]);
@@ -349,8 +344,7 @@ static Val str_trim(VM *vm, Val *args, int nargs) {
  * Wrong types -> nil. GC safety: the whole list is built inside the
  * callback window (gate closed, chunk arena), so the intermediate pair
  * Vals accumulated in `acc` cannot move. */
-static Val str_split(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val str_split(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]) || !val_is_string(args[1]))
         return val_nil();
     HeapString *s = val_get_string(args[0]);
@@ -405,8 +399,7 @@ static Val str_split(VM *vm, Val *args, int nargs) {
  * per field (~5 per header, ~1.5us for a 6-header request). GC safety:
  * the list is built inside the callback window (gate closed, chunk
  * arena), so the Vals accumulated in `acc` cannot move. */
-static Val str_pairs(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val str_pairs(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]) || !val_is_string(args[1]) || !val_is_string(args[2]))
         return val_nil();
     HeapString *s = val_get_string(args[0]);
@@ -471,8 +464,7 @@ static Val str_pairs(VM *vm, Val *args, int nargs) {
 
 /* Join a proper list of strings with sep; any non-string element or an
  * improper tail abandons the whole result -> "". */
-static Val str_join(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val str_join(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[1]))
         return val_string(p, "", 0);
     HeapString *sep = val_get_string(args[1]);
@@ -518,8 +510,7 @@ static Val str_join(VM *vm, Val *args, int nargs) {
 /* Replace every non-overlapping occurrence of old with new. old == ""
  * -> s unchanged (documented divergence from Go's insert-between).
  * Wrong types -> "". */
-static Val str_replace(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val str_replace(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]) || !val_is_string(args[1]) || !val_is_string(args[2]))
         return val_string(p, "", 0);
     HeapString *s = val_get_string(args[0]);
@@ -559,8 +550,7 @@ static Val str_replace(VM *vm, Val *args, int nargs) {
 }
 
 /* ASCII-only case mapping (A-Z <-> a-z); other bytes pass through. */
-static Val str_upper(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val str_upper(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]))
         return val_string(p, "", 0);
     HeapString *hs = val_get_string(args[0]);
@@ -576,8 +566,7 @@ static Val str_upper(VM *vm, Val *args, int nargs) {
     return result;
 }
 
-static Val str_lower(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val str_lower(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]))
         return val_string(p, "", 0);
     HeapString *hs = val_get_string(args[0]);
@@ -616,15 +605,13 @@ static Val pad(Proc *p, HeapString *hs, int64_t n, int64_t ch, int at_start) {
     return result;
 }
 
-static Val str_pad_start(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val str_pad_start(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]) || !val_is_int(args[1]) || !val_is_int(args[2]))
         return val_string(p, "", 0);
     return pad(p, val_get_string(args[0]), val_get_int(args[1]), val_get_int(args[2]), 1);
 }
 
-static Val str_pad_end(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val str_pad_end(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]) || !val_is_int(args[1]) || !val_is_int(args[2]))
         return val_string(p, "", 0);
     return pad(p, val_get_string(args[0]), val_get_int(args[1]), val_get_int(args[2]), 0);
@@ -636,8 +623,7 @@ static Val str_pad_end(VM *vm, Val *args, int nargs) {
  * would never match the pattern the compiler emits for option.ta's ADT. */
 static int sym_some, sym_none;
 
-static Val str_parse_float(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val str_parse_float(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]))
         return val_symbol((uint32_t)sym_none);
     HeapString *hs = val_get_string(args[0]);
@@ -670,8 +656,7 @@ static Val str_parse_float(VM *vm, Val *args, int nargs) {
 /* "%g": 6 significant digits, trailing zeros trimmed, exponent from
  * 1e05 offsets ("1.5", "0.0001", "1e+06"). Non-float input is widened
  * like val_to_double; anything else -> "0". */
-static Val str_from_float(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val str_from_float(VM *vm, Proc *p, Val *args, int nargs) {
     double d = 0.0;
     if (val_is_float(args[0]))
         d = val_get_float(args[0]);
@@ -694,7 +679,7 @@ static int digit_val(unsigned char c) {
 
 /* Parse an unsigned base-2/8/16 magnitude, wrap into int48 via val_int.
  * No sign accepted; bad base, empty string or any bad digit -> -1. */
-static Val str_from_base(VM *vm, Val *args, int nargs) {
+static Val str_from_base(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]) || !val_is_int(args[1]))
         return val_int(-1);
     HeapString *hs = val_get_string(args[0]);
@@ -713,8 +698,7 @@ static Val str_from_base(VM *vm, Val *args, int nargs) {
 
 /* Render n as an unsigned 48-bit two's-complement value in base
  * 2/8/16, lowercase digits. Bad base -> "". */
-static Val str_to_base(VM *vm, Val *args, int nargs) {
-    Proc *p = tls_current_proc;
+static Val str_to_base(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_int(args[0]) || !val_is_int(args[1]))
         return val_string(p, "", 0);
     int64_t base = val_get_int(args[1]);

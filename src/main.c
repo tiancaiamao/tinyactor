@@ -531,13 +531,13 @@ static void install_frame_hooks(void) {
 static Val truth(int yes) { return yes ? val_true() : val_false(); }
 
 /* 语义对齐 ta_inline.h 的 val_is_*。 */
-static Val cfunc_intp(VM *vm, Val *a, int n) { return truth(val_is_int(a[0])); }
-static Val cfunc_stringp(VM *vm, Val *a, int n) { return truth(val_is_string(a[0])); }
-static Val cfunc_bytesp(VM *vm, Val *a, int n) { return truth(val_is_bytes(a[0])); }
-static Val cfunc_pidp(VM *vm, Val *a, int n) { return truth(val_is_pid(a[0])); }
-static Val cfunc_floatp(VM *vm, Val *a, int n) { return truth(val_is_float(a[0])); }
+static Val cfunc_intp(VM *vm, Proc *p, Val *a, int n) { return truth(val_is_int(a[0])); }
+static Val cfunc_stringp(VM *vm, Proc *p, Val *a, int n) { return truth(val_is_string(a[0])); }
+static Val cfunc_bytesp(VM *vm, Proc *p, Val *a, int n) { return truth(val_is_bytes(a[0])); }
+static Val cfunc_pidp(VM *vm, Proc *p, Val *a, int n) { return truth(val_is_pid(a[0])); }
+static Val cfunc_floatp(VM *vm, Proc *p, Val *a, int n) { return truth(val_is_float(a[0])); }
 /* bool?: TAG_TRUE / TAG_FALSE 两个立即数标签，没有 val_is_* 可用。 */
-static Val cfunc_boolp(VM *vm, Val *a, int n) {
+static Val cfunc_boolp(VM *vm, Proc *p, Val *a, int n) {
     uint64_t t = val_tag(a[0]);
     return truth(t == TAG_TRUE || t == TAG_FALSE);
 }
@@ -547,7 +547,7 @@ static Val cfunc_boolp(VM *vm, Val *a, int n) {
  * （link_unit 的 fatal_unknown_cfunc）—— 这张表是该白名单的宿主侧契约。 */
 static const struct {
     const char *name;
-    Val (*fn)(VM *vm, Val *args, int nargs);
+    TaCFunc fn;
 } bare_preds[] = {
     {"int?", cfunc_intp}, {"string?", cfunc_stringp}, {"bytes?", cfunc_bytesp},
     {"pid?", cfunc_pidp}, {"float?", cfunc_floatp},   {"bool?", cfunc_boolp},
@@ -620,7 +620,6 @@ static Proc *host_init(void) {
     Proc *entry = proc_new(g_vm);
     if (!entry)
         fatal("proc_new failed");
-    tls_current_proc = entry;
     /* entry = main 进程：main_pid 供 scheduler 的崩溃上报/退出码判定
      * （scheduler.c：entry 异常死亡置 main_crashed，tavm 退出码 1）。 */
     g_vm->main_pid = entry->pid;
@@ -662,10 +661,9 @@ static void run_reset(void) {
     if (g_vm) {
         /* 上一轮 main 收尾已 vm_poller_stop（wasm 降级模式线程根本没起），
          * 这里把整个 VM 还掉——不还则每重入漏一张 1M 槽进程表 + 符号表。
-         * vm_free 不触碰 tls_current_proc（其用途全在 cfunc 运行期）。 */
+         * vm_free 不触碰任何「当前 proc」——proc 只活在 run_proc 的栈上。 */
         vm_free(g_vm);
         g_vm = NULL;
-        tls_current_proc = NULL;
     }
 }
 

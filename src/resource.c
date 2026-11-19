@@ -80,11 +80,11 @@ void ta_resource_release(HeapResource *r) {
  * 归属先于释放检查：release 已经 free 掉 payload，而一份投递出去的旧副本
  * 可以活得比它久，只有属主能读 r->res。closed_code 是唯一随调用方语义变化
  * 的一位：操作入口传 -1（已释放 = 失效），close 传 1（已释放 = 幂等成功）。 */
-int ta_resource_open(Val v, HeapResource **out, int closed_code) {
+int ta_resource_open(Val v, Proc *self, HeapResource **out, int closed_code) {
     HeapResource *r = val_get_resource(v);
     if (r == NULL)
         return -1;
-    if (r->owner_pid != tls_current_proc->pid)
+    if (r->owner_pid != self->pid)
         return -2;
     if (r->res == NULL)
         return closed_code;
@@ -152,9 +152,9 @@ int resource_send_check(Val msg, Proc *sender, Proc *target) {
     int ok = 0;
     if (n == 0)
         goto out;
-    /* poller 线程（timer fire）上 tls_current_proc 为 NULL —— 资源分支虽
-     * 因 timer_register 已拒而不可达，校验仍 NULL-safe（R2 N3）：无属主
-     * 上下文一律判违规。 */
+    /* poller 线程（timer fire）上没有 proc 上下文（sender == NULL）—— 资源
+     * 分支虽因 timer_register 已拒而不可达，校验仍 NULL-safe（R2 N3）：无
+     * 属主上下文一律判违规。 */
     if (!sender || target == sender)
         goto out;
     for (int i = 0; i < n; i++) {

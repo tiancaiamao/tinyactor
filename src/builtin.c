@@ -14,8 +14,6 @@
  * ============================================================ */
 #include "ta.h"
 
-static Proc *current_proc(void) { return tls_current_proc; }
-
 static Val resource_die(Proc *p) {
     /* 收口违规不在 cfunc 里 proc_die：do_ccall 统一发布现场并隔离死。 */
     p->cfunc_die = "resource";
@@ -25,58 +23,62 @@ static Val resource_die(Proc *p) {
 /* ================================================================
  * self / spawn / send — 不挂起
  * ================================================================ */
-Val cfunc_self(VM *vm, Val *a, int n) {
+Val cfunc_self(VM *vm, Proc *p, Val *a, int n) {
     (void)vm;
     (void)a;
     (void)n;
-    return val_pid((uint32_t)current_proc()->pid);
+    return val_pid((uint32_t)p->pid);
 }
 
-Val cfunc_spawn(VM *vm, Val *a, int n) {
+Val cfunc_spawn(VM *vm, Proc *p, Val *a, int n) {
     (void)n;
-    Proc *p = current_proc();
     Proc *np;
     Val owned;
     int fid;
-    if (proc_spawn_begin(vm, a[0], &np, &owned, &fid) != 0)
+    if (proc_spawn_begin(vm, p, a[0], &np, &owned, &fid) != 0)
         return resource_die(p);
     proc_frame_init(vm, np, fid, owned); /* 建帧即压闭包入 fn 槽成根 */
     runq_enqueue(vm, np->pid);
     return val_pid((uint32_t)np->pid);
 }
 
-Val cfunc_send(VM *vm, Val *a, int n) {
+Val cfunc_send(VM *vm, Proc *p, Val *a, int n) {
     (void)n;
     uint32_t tpid = val_get_pid(a[0]);
     Proc *t = vm_proc_lookup(vm, (int)tpid);
-    if (t && atomic_load(&t->state) != PROC_DEAD && mbox_deliver(vm, t, a[1]) != 0)
-        return resource_die(current_proc());
+    if (t && atomic_load(&t->state) != PROC_DEAD && mbox_deliver(vm, p, t, a[1]) != 0)
+        return resource_die(p);
     return val_nil();
 }
 
 /* ================================================================
  * recv / recv_after — 邮箱为空则在持锁窗口内挂起
  * ================================================================ */
-Val cfunc_recv(VM *vm, Val *a, int n) {
+Val cfunc_recv(VM *vm, Proc *p, Val *a, int n) {
     (void)a;
     (void)n;
-    Proc *p = current_proc();
     pthread_mutex_lock(&p->mbox_lock);
     if (p->mbox_count == 0) {
-        vm_yield_recv(vm); /* 锁留给 do_ccall 收口；本调用的结果会被丢弃 */
+        vm_yield_recv(vm, p); /* 锁留给 do_ccall 收口；本调用的结果会被丢弃 */
         return val_nil();
     }
     pthread_mutex_unlock(&p->mbox_lock);
     return mbox_pop_cfunc(p);
 }
 
-Val cfunc_recv_after(VM *vm, Val *a, int n) {
+/* 收掉 recv_after 的 deadline 并把它从 recv_armed 计数里摘出来 —— 三个
+ * 出口（上轮已过期 / 本轮拿到消息 / 本轮超时）都要做，漏一处 poller 就
+ * 永远为一个死 deadline 空转。 */
+static void recv_disarm(VM *vm, Proc *p) {
+    atomic_store(&p->recv_deadline_ms, -1);
+    atomic_fetch_sub(&vm->recv_armed, 1);
+}
+
+Val cfunc_recv_after(VM *vm, Proc *p, Val *a, int n) {
     (void)n;
-    Proc *p = current_proc();
 
     if (atomic_load(&p->recv_deadline_ms) == RECV_AFTER_EXPIRED) {
-        atomic_store(&p->recv_deadline_ms, -1);
-        atomic_fetch_sub(&vm->recv_armed, 1);
+        recv_disarm(vm, p);
         return val_nil();
     }
     if (atomic_load(&p->recv_deadline_ms) < 0) {
@@ -87,31 +89,28 @@ Val cfunc_recv_after(VM *vm, Val *a, int n) {
     pthread_mutex_lock(&p->mbox_lock);
     if (p->mbox_count > 0) {
         pthread_mutex_unlock(&p->mbox_lock);
-        atomic_store(&p->recv_deadline_ms, -1);
-        atomic_fetch_sub(&vm->recv_armed, 1);
+        recv_disarm(vm, p);
         return mbox_pop_cfunc(p);
     }
     if (mono_now_ms() >= atomic_load(&p->recv_deadline_ms)) {
         pthread_mutex_unlock(&p->mbox_lock);
-        atomic_store(&p->recv_deadline_ms, -1);
-        atomic_fetch_sub(&vm->recv_armed, 1);
+        recv_disarm(vm, p);
         vm_wait_unregister(vm, p);
         return val_nil();
     }
-    vm_yield_recv(vm); /* 持锁挂起：唤醒后重执行同一条 CALL，deadline 已 armed */
+    vm_yield_recv(vm, p); /* 持锁挂起：唤醒后重执行同一条 CALL，deadline 已 armed */
     return val_nil();
 }
 
 /* ================================================================
  * recv_peek / recv_commit — selective receive 的扫描游标
  * ================================================================ */
-Val cfunc_recv_peek(VM *vm, Val *a, int n) {
+Val cfunc_recv_peek(VM *vm, Proc *p, Val *a, int n) {
     (void)a;
     (void)n;
-    Proc *p = current_proc();
     pthread_mutex_lock(&p->mbox_lock);
     if (p->peek_index >= p->mbox_count) {
-        vm_yield_recv(vm); /* peek_index 保留：唤醒后只扫新消息 */
+        vm_yield_recv(vm, p); /* peek_index 保留：唤醒后只扫新消息 */
         return val_nil();
     }
     MsgFragment *frag = p->mbox_frag_head;
@@ -125,36 +124,32 @@ Val cfunc_recv_peek(VM *vm, Val *a, int n) {
     }
     /* do_ccall 已关门且挂了 arena，深拷直接落在 chunk 上；无须（也不能在
      * 这里）proc_reserve_heap —— 它会要求 GC 门是开的。 */
-    Val msg = val_deep_copy(p, frag->root, NULL);
+    Val msg = val_deep_copy(p, p, frag->root, NULL);
     p->peek_index++;
     pthread_mutex_unlock(&p->mbox_lock);
     return msg;
 }
 
-Val cfunc_recv_commit(VM *vm, Val *a, int n) {
+Val cfunc_recv_commit(VM *vm, Proc *p, Val *a, int n) {
     (void)vm;
     (void)a;
     (void)n;
-    Proc *p = current_proc();
     int target = p->peek_index - 1;
     pthread_mutex_lock(&p->mbox_lock);
+    MsgFragment *frag;
     if (target == 0) {
-        MsgFragment *frag = p->mbox_frag_head;
-        p->mbox_frag_head = frag->next;
-        if (!p->mbox_frag_head)
-            p->mbox_frag_tail = NULL;
-        free(frag);
+        frag = mbox_detach_head_locked(p); /* 顺带维护 tail / count */
     } else {
         MsgFragment *prev = p->mbox_frag_head;
         for (int i = 0; i < target - 1; i++)
             prev = prev->next;
-        MsgFragment *frag = prev->next;
+        frag = prev->next;
         prev->next = frag->next;
         if (frag == p->mbox_frag_tail)
             p->mbox_frag_tail = prev;
-        free(frag);
+        p->mbox_count--;
     }
-    p->mbox_count--;
+    free(frag);
     p->peek_index = 0;
     pthread_mutex_unlock(&p->mbox_lock);
     return val_nil();
@@ -163,9 +158,8 @@ Val cfunc_recv_commit(VM *vm, Val *a, int n) {
 /* ================================================================
  * monitor — 目标死亡时投递 DOWN，返回 ref
  * ================================================================ */
-Val cfunc_monitor(VM *vm, Val *a, int n) {
+Val cfunc_monitor(VM *vm, Proc *p, Val *a, int n) {
     (void)n;
-    Proc *p = current_proc();
     uint32_t tpid = val_get_pid(a[0]);
     int ref = atomic_fetch_add(&vm->next_ref, 1) + 1;
     int alive = 0;
@@ -189,7 +183,7 @@ Val cfunc_monitor(VM *vm, Val *a, int n) {
          * 落在 chunk 上；消息经 frag_copy 序列化入队，之后 arena 丢弃即可。 */
         Val noproc = val_symbol((uint32_t)vm_intern_symbol(vm, "noproc"));
         Val msg = down_msg_build(vm, p, val_int(ref), val_pid(tpid), noproc);
-        mbox_deliver(vm, p, msg);
+        mbox_deliver(vm, p, p, msg);
     }
     return val_int(ref);
 }
@@ -198,7 +192,7 @@ Val cfunc_monitor(VM *vm, Val *a, int n) {
 void vm_register_actor_primitives(VM *vm) {
     struct {
         const char *name;
-        Val (*fn)(VM *vm, Val *args, int nargs);
+        TaCFunc fn;
         int nargs;
     } fns[] = {
         {"self", cfunc_self, 0},
