@@ -54,31 +54,6 @@ static inline Val frag_box_ptr(uint16_t tag, void *ptr) {
     return ((uint64_t)tag << 48) | ((uint64_t)(uintptr_t)ptr & 0x0000FFFFFFFFFFFFULL);
 }
 
-/* Total bytes needed in data[] for a Val tree (each object 8-aligned).
- * 尺寸与结构都从 ta_inline.h 那一份拿（val_node_shape）：
- * 分片布局用裸尺寸而不是 gc_obj_size —— 分片不是 GC 堆，没有「最小对象
- * 下限」那 16 字节（空字符串在堆里占 16，在这里只占 8）。 */
-int frag_calc_size(Val root, int *has_res) {
-    Val *work = NULL;
-    int n = 0, cap = 0, total = 0;
-
-    if (has_res)
-        *has_res = 0;
-    TA_PUSH(work, n, cap, root);
-    while (n > 0) {
-        Val v = work[--n];
-        int nk, raw;
-        const Val *kids = val_node_shape(NULL, v, &nk, &raw);
-        total += FRAG_ALIGN8(raw);
-        if (val_tag(v) == TAG_RESOURCE && has_res)
-            *has_res = 1;
-        for (int i = nk - 1; i >= 0; i--)
-            TA_PUSH(work, n, cap, kids[i]);
-    }
-    free(work);
-    return total;
-}
-
 /* Copy a Val tree into fragment f's data[] (8-aligned placements).
  * Returns a new Val whose pointers address the fragment's data[]. */
 typedef struct {
@@ -189,7 +164,8 @@ static void vm_wake_proc(VM *vm, Proc *p) {
  * CAS 认领，而不是靠这里的锁。 */
 int mbox_deliver(VM *vm, Proc *sender, Proc *target, Val msg) {
     int has_res = 0;
-    int need = frag_calc_size(msg, &has_res);
+    /* 分片布局用裸尺寸：min_object = 0，分片不是 GC 堆、没有 16 字节下限 */
+    int need = val_tree_size(msg, 0, &has_res);
     /* 资源收口校验（docs/c-resource-design.md §4）：self-send / 非属主 /
      * 重复 payload / 无 proc 上下文（poller 线程）→ 违规：消息不入队、
      * 归属不动，返回 -1 由调用方映射成进程隔离错误（LB_SEND）。 */
@@ -276,7 +252,7 @@ Val mbox_pop(Proc *p) {
     /* The message may exceed the arena's free space, and the gate-closed
      * deep copy below cannot grow the arena — reserve first (gate is open
      * here, so growth is a safe collection). */
-    proc_reserve_heap(p, val_calc_heap_size(frag->root));
+    proc_reserve_heap(p, val_tree_size(frag->root, TA_HEAP_MIN_OBJECT, NULL));
     Val v = val_deep_copy(p, p, frag->root, NULL); /* 校验已在入队时做过（§4） */
     free(frag);
     return v;
@@ -430,7 +406,7 @@ int proc_spawn_begin(VM *vm, Proc *parent, Val clos, Proc **out_np, Val *out_own
     proc_ensure_heap(np);
     /* 闭包整体深拷入子堆：子绝不持父堆指针（父可独立 GC/死）。
      * 先 reserve：新 arena 很小，关门拷贝不能增长它。 */
-    proc_reserve_heap(np, val_calc_heap_size(clos));
+    proc_reserve_heap(np, val_tree_size(clos, TA_HEAP_MIN_OBJECT, NULL));
     int res_err = 0;
     Val owned = val_deep_copy(parent, np, clos, &res_err);
     if (res_err) {

@@ -550,15 +550,25 @@ static inline void ta_arr_grow(void **items, int *cap, int count, int need, size
     *cap = next;
 }
 
+/* 元素先落进具名临时量，再写数组 —— 顺序不能靠「v 不会动 count」这种约定：
+ * `(arr)[count++] = v` 里 count++ 与 v 的求值**互不排序**，而 v 完全可以自己
+ * 改 count（val.c 的 copy_attach 一边从 results 弹孩子、一边返回装配结果）。
+ * clang 先算 v、gcc 先算下标：同一份源码 macOS 正确、Linux 把结果写到错位的
+ * 槽里（实测症状：消息里带闭包的程序 Linux 报 `tavm: LOADF on non-closure`）。
+ * 临时量把「算 v」排在「读 count」之前，顺序由语言保证，调用方传什么都不踩。 */
 #define TA_PUSH(arr, count, cap, v)                                                                \
-    (ta_arr_grow((void **)&(arr), &(cap), (count), 1, sizeof *(arr)), (arr)[(count)++] = (v))
+    do {                                                                                           \
+        __typeof__(*(arr)) ta_push_v_ = (v);                                                       \
+        ta_arr_grow((void **)&(arr), &(cap), (count), 1, sizeof *(arr));                           \
+        (arr)[(count)++] = ta_push_v_;                                                             \
+    } while (0)
 
 /* ============================================================
  * 值树的形状 —— 「有几个孩子、第 i 个是谁、占多少字节」
  * ============================================================
  *
  * 消息分片（scheduler.c frag_copy）、深拷（val.c val_deep_copy /
- * val_converge_copy）、大小预估（val_calc_heap_size / frag_calc_size）、
+ * val_converge_copy）、大小预估（val_tree_size）、
  * 资源收集（resource.c）原先各写了一遍 tag 分发：同一份结构知识六份副本，
  * 加一个堆类型要改六处，漏一处不是崩溃而是**静默少拷一个孩子**。现在只在
  * 这里。尺寸（val_node_shape → heap_obj_raw_size）同理只有一份。

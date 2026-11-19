@@ -89,7 +89,7 @@ actor B 堆:  HeapResource(owner=B, res=P) ──┴──► P { ptr=X, dtor } 
   交语义下消失，atomic 也随之消失（§5）。
 
 `HeapResource` 是普通堆对象，现有机制原样适用：GC 搬运、`obj_size` 一行、
-`val_calc_heap_size` 一行。payload 不参与搬运。
+`val_tree_size` 一行。payload 不参与搬运。
 
 **「已释放」为什么可以只记在 header 里**（v4 修正，见 §11 R3）：归属只会**移交**
 不会**复制**——send / spawn / 投递收口把移交双方副本的 `owner_pid` 一起改写（§4），
@@ -134,7 +134,7 @@ actor，或 spawn 出来的新 actor。
 | timer | `timer_register`（`lib/timer.c`）、fire 路径 | **不支持**（见下）。fire 时 `msg = t->frag->root` 指向 malloc 快照而非任何堆，改写是 no-op——依赖「register 已拒绝资源」使该分支不可达 |
 
 **实现前提**（R2 S1 节）：`mbox_deliver` 手里只有 `(vm, target, msg)`，要改写「发送
-方自己堆 header」需要**第三次遍历 msg 树**（`frag_calc_size`、`frag_copy` 之外再加
+方自己堆 header」需要**第三次遍历 msg 树**（`val_tree_size`、`frag_copy` 之外再加
 一遍）。可行，§8 触点清单已列。改写与入队在同一次 `mbox_lock` 持有内、同一线程完
 成，接收方 `mbox_pop` / peek 要拿同一把锁，happens-before 由 mutex 保证；发送方死亡
 只有 `PROC_DIE_ISOLATED`（`src/vm.c` 的宏；9 处调用全在 `run_proc` 的 opcode
@@ -373,9 +373,10 @@ dtor 会在 GC 尾声（fromspace 扫描中）、`proc_die`、`vm_free` 里跑�
 | 位置 | 改动 |
 |---|---|
 | `ta.h` | `HEAP_RESOURCE`、`TAG_RESOURCE = 0xFFFC`（`TAG_LAST = TAG_CLOS_ID = 0xFFFB` 在顶部的 TAG 表，同步更新；`val_is_float = t < TAG_FIRST \|\| t > TAG_LAST` 这个 inline 在 `ta_inline.h`——不改也判 false，但 TAG_LAST 语义应更新；NaN 装箱规范化前提见 `val_float` / `val_from_double`）、`HeapResource`、`ResourcePayload`、API 声明。`sizeof(HeapHeader) == 2`（`ta_inline.h` 的分配路径依赖这个前提） |
-| `src/val.c` | boxing、打印（`<resource>`）、`val_deep_copy`（含 owner 校验 + payload 去重）、`val_calc_heap_size`、**`val_converge_copy`**。注意：`val_converge_copy` 对**堆内对象按引用透传**（`!val_in_chunk → 保留原引用` 那个分支），资源 Val 穿过回调收敛**不会**产生 header 副本，天然安全——需要加的只是可选的 owner 校验分支与「未知 in-chunk tag → nil」的防御。而 `val_deep_copy` 的 else→nil 分支会把漏加的资源**静默变 nil**——所有 Val 遍历 switch 的 default 建议一律 `fatal`，不要 nil |
+| `src/val.c` | boxing、打印（`<resource>`）、`val_deep_copy`（含 owner 校验 + payload 去重）、`val_tree_size`（`frag_calc_size` 与
+`val_calc_heap_size` 合并后的唯一一份尺寸遍历）、**`val_converge_copy`**。注意：`val_converge_copy` 对**堆内对象按引用透传**（`!val_in_chunk → 保留原引用` 那个分支），资源 Val 穿过回调收敛**不会**产生 header 副本，天然安全——需要加的只是可选的 owner 校验分支与「未知 in-chunk tag → nil」的防御。而 `val_deep_copy` 的 else→nil 分支会把漏加的资源**静默变 nil**——所有 Val 遍历 switch 的 default 建议一律 `fatal`，不要 nil |
 | `src/gc.c` | `obj_size`（default abort 兜住未知 type）、`gc_copy_val`、`gc_scan_tospace`（类型断言 `GC_ASSERT`）各一行；新增 fromspace 未转发扫描（§6.2）。注意 forwarding 指针写在 obj+2 起 8 字节（`gc_copy_obj` 里写 FLAG_FORWARDED 处），覆盖 padding(2..4) + `owner_pid`(4..8) + **`res` 低 2 字节(8..10)**——被转发的 fromspace 副本只看 `FLAG_FORWARDED`，字段不再被读，注释点明（含 res） |
-| `src/scheduler.c` | `proc_spawn_begin`（spawn 的前半程）是归属改写插入点（`val_deep_copy` → `val_set_resource_owner`，入队在建帧之后由调用方做）；`mbox_deliver` 入队成功后改写归属，**需要第三次遍历 msg 树**（§4 实现前提）；`frag_calc_size`（switch 无 default 计数——漏分支 = fragment 缓冲区按小分配）与 `frag_copy` 加资源分支 + 收口校验（owner / self-send / 重复 payload，NULL-safe）；`proc_die` 扫活堆 + drain fragment（§6.3） |
+| `src/scheduler.c` | `proc_spawn_begin`（spawn 的前半程）是归属改写插入点（`val_deep_copy` → `val_set_resource_owner`，入队在建帧之后由调用方做）；`mbox_deliver` 入队成功后改写归属，**需要第三次遍历 msg 树**（§4 实现前提）；`frag_calc_size`（`val_tree_size` 传 `min_object = 0` 的薄包装）与 `frag_copy` 加资源分支 + 收口校验（owner / self-send / 重复 payload，NULL-safe）；`proc_die` 扫活堆 + drain fragment（§6.3） |
 | `src/builtin.c` | `cfunc_recv_peek`（其中做 deep copy 那步）遇资源报错（§4 peek 禁令）；peek/commit 路径加测试 |
 | `src/api.c` | 模块 API 实现；`vm_free` teardown 扫描（§6.4，覆盖 main 自己的堆） |
 | `src/vm.c` | `cfunc_spawn` 只剩「调 `proc_spawn_begin` + 建帧 + 入队」三行；`cfunc_send` 的 DEAD 早退不经 frag_copy（§5.4）；`do_cfunc_die` 作为收口违规的报错机制 |
@@ -445,7 +446,7 @@ v2 全部采纳：
   N6 LB_SEND 死目标静默丢弃 → §5.4 备忘。
 - **事实核对**（下列行号只是那一轮的实测结果，重构后必然漂移——核对请按符号名找，别信行号）：20 项断言，15 项属实、5 项行号不准（全部已按本轮实测校正：`gc.c:236`
   精确；swap `214-221`；`val_converge_copy` `val.c:303` 精确且堆对象按引用透传；
-  `frag_calc_size` `76-118`；`TAG_LAST` `ta.h:66`；forwarding `gc.c:81-82`；pid
+  `frag_calc_size` `56-62`；`TAG_LAST` `ta.h:66`；forwarding `gc.c:81-82`；pid
   `316-331`；根集 `gc.c:194-203`；`GC_ASSERT` `103-108`；DOWN `527-545`；main 清算
   `473-520`；vm_free `api.c:259`；peek `builtin.c:38-69`；「b_send」名称已过时，
   实际调用点 4 个）。`val_converge_copy` 的透传语义是本轮新发现的简化——资源穿过
