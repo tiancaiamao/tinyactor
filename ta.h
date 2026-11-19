@@ -832,9 +832,6 @@ void vm_seal_host_modules(VM *vm);
  * 判据不能用整个注册表，否则答案随装载顺序变。 */
 int vm_host_module_registered(VM *vm, const char *mod, int mod_len);
 int vm_find_cfunc(VM *vm, const char *name);
-/* Monotonic clock in milliseconds (CLOCK_MONOTONIC). Shared by src/net.c
- * (connect deadlines) and src/scheduler.c (I/O poller deadline wakes). */
-void vm_register_http_module(VM *vm);
 
 /* execution */
 void vm_poller_start(VM *vm);
@@ -928,9 +925,6 @@ uint64_t prof_now_ns(void);
 
 /* debug */
 void print_val(VM *vm, Val v);
-
-/* REPL */
-Val vm_eval(VM *vm, const char *src);
 
 /* ============================================================
  * C API — value constructors
