@@ -92,17 +92,6 @@ jobs:
           source: ./docs
           destination: ./_site
 
-      # 临时诊断：native 路失败时看种子重建到底卡在哪（定位完就删）
-      - name: Debug seed rebuild
-        if: failure()
-        run: |
-          set -x
-          SCRIPT_DIR=$PWD
-          mktemp "$SCRIPT_DIR/lib/.bootstrap.XXXXXX"; echo "mktemp rc=$?"
-          touch lib/bootstrap/driver.ta
-          ./tinyactor run build/tour-check/hello-tinyactor.ta; echo "tinyactor rc=$?"
-          ls -l lib/bootstrap.tabc lib/bootstrap/driver.ta
-
       - uses: actions/upload-pages-artifact@v3
         with:
           path: ./_site
