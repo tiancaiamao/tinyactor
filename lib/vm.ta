@@ -19,14 +19,16 @@
 //                                              invalid input
 //   make_tok_vec(toks)             -> a        token vector over a list of
 //                                              `tokenizer.Token` values
-//                                              (opaque handle); -1 when the
-//                                              argument is not a pair
+//                                              (opaque Resource handle; nil
+//                                              when the argument is not a
+//                                              pair)
 //   tok_type(vec, pos : Int)       -> a        token type symbol; 'eof past
 //                                              the end
 //   tok_val(vec, pos : Int)        -> a        token payload; nil past the end
 //   tok_at(vec, pos : Int)         -> Int      token's 0-based source offset;
 //                                              0 past the end
-//   free_tok_vec(vec)              -> a        releases the handle; nil
+//   free_tok_vec(vec)              -> a        releases the handle (idempotent);
+//                                              nil
 //
 // Return types are `a` where the value is an opaque handle or a union no
 // arrow type can express (nil / -1 / value).
