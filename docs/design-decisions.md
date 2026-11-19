@@ -47,7 +47,8 @@ external fn greet(name: String) -> String              // 缺省 = 模块名.函
 **结论（已过时，留档）**：Float 当时**不实现**，只修正文档；现已实现。
 
 - 现状：Float 已落地——Val 表示就是 **NaN-boxing**（`ta.h` 的 tag 表，16-bit tag /
-  48-bit payload），`ta_inline.h` 的 `val_is_float`/`val_to_double`、`OP_PUSH_FLOAT`，
+  48-bit payload），`ta_inline.h` 的 `val_is_float`/`val_to_double`、常量编码的
+  float kind（`lib/bootstrap/bytecode.ta` 的 kind 6：装载期 `strtod` 一次），
   测试 `test/basic/float-arith.ta` / `float-specials.ta` 在跑，typecheck 走严格
   数值塔（`infer_num`，Int/Float 混算报错）。
 - 当时的误判：以为"Int 是 48 位 tagged union、**不是 NaN boxing**、Float 暂无"
@@ -142,20 +143,21 @@ external fn greet(name: String) -> String              // 缺省 = 模块名.函
    malloc worklist 里横跨分配（C 模块回调、`val_deep_copy` 的迭代 worklist、嵌套
    `val_pair` 链、将死的 proc）——用 `proc_gc_enter`/`proc_gc_leave` 把 `gc_gate`
    加/减一。门关时分配只置 `gc_pending`；门重新开为 0 且区段的活值已根化后，由
-   `proc_gc_drain` 补收（如 `OP_CCALL_NAME`/`OP_RECV*` 在把结果压栈之后）。
+   `proc_gc_drain` 补收（如 `CALL → TAG_NATIVE → do_ccall` 的回调、`recv` 系列
+   cfunc 在把结果压栈之后）。
 3. **延迟收**：区段出来时若活值还没根化（`val_deep_copy` 的返回值、将死 proc 的堆），
    就不补收，让请求挂着——下一个门开的分配点的那次 `proc_gc_drain` 自然会消费它。
 
 **能重写为栈纪律就不套门**：`OP_CONS` 过去先 `pop` 到 C 局部再 `val_pair`，现在改为
 "先分配 → 再从栈槽 `proc_peek` 读 car/cdr → `sp += 2` → 压回新 pair"（GC 只转发栈
 槽，按值读即安全）。`OP_CLOSURE`/`OP_PUSH_STRING` 本就"先分配、后从栈或字节码读"，
-无需门；`OP_PUSH_FLOAT` 只是从字节码取操作数，不分配，更无需门。
+无需门；浮点字面量走常量区（装载期就折好了），运行期不分配，更无需门。
 
 **一条保证**（仍成立）：**arena 不移动**。`Val` 是**绝对指针**，但 buffer 只允许在
 `heap_ptr == 0`（无对象 ⇒ 无指针指向它）时扩容/搬迁，之后终生冻结。收集只是把存活
 对象在两个半区间复制、并**转发 TA 栈**；因此指向堆内缓冲区的裸指针
 （`char *` into `HeapString->data`）只要在安全点不在 C 局部里横跨分配，就仍然有效。
-C 模块的"不需要 root"承诺不变：`OP_CCALL_NAME` 用门罩住整个回调，回调期间不发生
+C 模块的"不需要 root"承诺不变：`do_ccall` 用门罩住整个回调，回调期间不发生
 收集，回调返回后结果先压栈再补收。
 
 **代价 / 取舍**（明确记录）：
@@ -237,11 +239,15 @@ OP_BUILTIN id n        // id = B_* 下标；n = 实参数。spawn 的实参就�
   review 兜住（脚本不解析该表）；它的 `BuiltinId`（`ta.h`）只是表内布局，
   不是编译 id 空间。旧的"每个原语一个 opcode"模式下这个契约是隐式
   的（opcode 号本身就是身份）。
-- **编号留洞**：删掉的 9 个编号**不回收**，在 `ta.h` 的 `OpCode` 枚举里以
-  `OP_RESERVED_<PRIMITIVE>` 保留（34-40 / 42 / 48；`OP_SELF = 41` 仍然是真的
-  opcode——它便宜且极热）。好处是幸存 opcode 编号一个都不动，`bootstrap.tabc`
-  之外的任何既有二进制/注释/文档引用不会静默指错；代价是枚举里留了 9 个洞，
-  命中它们等于未定义 opcode，与越界 opcode 走同一条 unknown-opcode 报错路径。
+- **编号留洞**：删掉的编号**不回收**。活着的编号空间只有一份（`lib/bootstrap/compile.ta`
+  的 `const OP_* = N` 是权威，`ta.h` 的 `LOP_*` 是逐条镜像），洞就用
+  `LOP_RESERVED_28` 这种具名占位符钉住 —— 好处是幸存编号一个都不动，已入库的
+  `lib/bootstrap.tabc` 种子（自举输入）不会被静默指错；命中留洞等于未定义 opcode，
+  与越界 opcode 走同一条 unknown-opcode 报错路径。
+  actor 原语退休时占的那 9 个编号（34-40 / 42 / 48）**只存在于历史编号空间**：
+  它们从没进过现行 `LOP_*` 编号（那一段早被融合指令占了），所以没有对应的
+  占位符要留，这段历史只在本文件里。（原先 `ta.h` 还有一个与 `LOP_*` 平行的
+  旧 `OpCode` 枚举记着这些洞，两套编号早已漂移成互相矛盾的错值 —— 已删除。）
 - **`.tabc` 版本 v2 → v3**（当时的机制）：v2 镜像里原语还是独立 opcode，v3 VM
   无法解释它，当时的 loader **直接拒绝**非 v3（错误信息写明版本号）。**现行
   `src/main.c` 已无版本检查**（grep 无 v3/version/magic/format 报错文本），版本
