@@ -35,7 +35,9 @@
 #         callMain(['-q','user.tabc'])            // run
 #
 # All intermediate artifacts go to a temp dir (cleaned up on exit); the only
-# repository output is docs/wasm/. The script is idempotent and repeatable.
+# output is docs/wasm/ — a build artifact (.gitignore'd, NOT committed). It is
+# produced by `make wasm` locally and freshly on every deploy by
+# .github/workflows/pages.yml. The script is idempotent and repeatable.
 #
 # Usage:
 #   scripts/build-wasm.sh [options]
@@ -122,7 +124,7 @@ fi
 # --- 2. Emscripten build ---------------------------------------------------
 # VM sources = all of src/*.c except main.c (it has main();
 # it is linked explicitly below, exactly once). src/ holds nothing but the
-# bytecode VM runtime (src/ holds only the VM runtime).
+# bytecode VM runtime — every C module lives in lib/<名字>.c.
 VM_SRCS=()
 for f in "$REPO_ROOT"/src/*.c; do
     [ "$f" = "$REPO_ROOT/src/main.c" ] && continue

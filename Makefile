@@ -242,7 +242,7 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
         test-unit-gate test-kl-link test-kl-sem \
         bootstrap benchmark benchmark-regression \
         benchmark-clean fmt fmt-version-check kernfuzz-fast \
-        test-fmt-guard test-tour \
+        test-fmt-guard test-tour wasm \
         kernfuzz-nightly kernfuzz-snapshot-check kernfuzz-minimize
 
 # Default build ships the complete C-module set: a bare `make clean; make`
@@ -662,11 +662,16 @@ test-fmt-guard: $(TEST_DEPS)
 	@bash test/run_fmt_guard_tests.sh
 
 # 教程课程门：docs/tour-lessons.js 里的课逐课编译 + 运行，比对 expected。
-# 跑两条路：原生 `tinyactor run`，以及 docs/wasm 那份真产物（Playground 在
-# 浏览器里跑的就是它，同一个实例反复 callMain）。只测原生会让 wasm 悄悄过期
-# ——它就这样烂了一个月，26 课里有课直接编译不过。
+# 跑两条路：原生 `tinyactor run`，以及 wasm 真产物（Playground 在浏览器里跑的
+# 就是它，同一个实例反复 callMain）。wasm 那份是 `make wasm` 现场编的、不入库
+# ——没编过就只跑 native 路并说明；CI 的 Playground workflow 先编再跑，两条都测。
 test-tour: $(TEST_DEPS)
 	@node scripts/verify-lessons.mjs
+
+# Playground 的 wasm 产物：docs/wasm/tinyactor-vm.{js,wasm}（.gitignore 忽略）。
+# 需要 emcc（brew install emscripten）；部署由 .github/workflows/pages.yml 跑。
+wasm: $(TEST_DEPS)
+	@./scripts/build-wasm.sh
 
 
 
