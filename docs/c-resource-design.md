@@ -144,19 +144,17 @@ actor，或 spawn 出来的新 actor。
 唤醒之前，纯观感。
 
 **归属检查收口在 `frag_copy` / `val_deep_copy` 的资源分支**：遇到 `HEAP_RESOURCE`
-时校验 `owner_pid == tls_current_proc->pid`，否则报错「resource owned by actor N」。
+时校验 `owner_pid == self->pid`（`self` 由调用方显式传入），否则报错「resource owned by actor N」。
 这一处校验同时实现三件事：
 
 - 「第二次 send 在源头报错」（fan-out 循环发送同一资源）；
 - 「移交后父方/发送方继续用」的下一次 send 会被拦住（不是静默）；
 - 拦掉两个必须禁止的路径（见下）。
 
-校验必须 **NULL-safe**（R2 N3）：`tls_current_proc` 在 timer fire 的 poller 线程上是
-NULL（`io_poller_thread` 从不设置它；赋值只有两处 —— `host_init` 的宿主线程和
-`run_proc` 的运行线程，收尾再置回 NULL），单线程模式 fire 时是陈旧值。资源分支虽因
-register 已拒而不可达，
-校验仍要写成 `tls_current_proc == NULL → fatal(带清晰信息)`，让未来的回归以报错而
-不是段错误的方式暴露。
+校验必须 **NULL-safe**（R2 N3）：`self` 在 timer fire 的 poller 线程上是 NULL
+（那里根本没有 proc —— fire 用 `mbox_deliver(vm, NULL, target, msg)` 显式表示「无
+sender」）。资源分支虽因 register 已拒而不可达，校验仍要写成
+`self == NULL → fatal(带清晰信息)`，让未来的回归以报错而不是段错误的方式暴露。
 
 **禁止：资源 send 给自己。** `target == self` 时移交是空操作，但 GC 不扫邮箱
 （根集只有栈和累加器：`gc_collect_internal` 的根扫描只走 `[p->sp, 0)` 与 `p->acc`）——发送方堆里的副本成
@@ -329,11 +327,11 @@ buffer / process / tls 的操作与 close 共 15 个入口都走它），**顺�
 （`owner → released`）：
 
 ```c
-int ta_resource_open(Val v, HeapResource **out, int closed_code) {
+int ta_resource_open(Val v, Proc *self, HeapResource **out, int closed_code) {
     HeapResource *r = val_get_resource(v);
     if (r == NULL)
         return -1;                    /* 伪造值 */
-    if (r->owner_pid != tls_current_proc->pid)
+    if (r->owner_pid != self->pid)
         return -2;                    /* stale 副本：payload 已归对方 */
     if (r->res == NULL)
         return closed_code;           /* 已释放：什么算「已释放」看调用方 */
@@ -361,7 +359,7 @@ dtor 会在 GC 尾声（fromspace 扫描中）、`proc_die`、`vm_free` 里跑�
 ## 7. 已决事项
 
 1. **模块操作必须做 owner 检查**（R1 的开放问题 1，升级为必须）：资源分支开头
-   `if (r->owner_pid != tls_current_proc->pid) return error`，一次 int 比较。与
+   `if (r->owner_pid != self->pid) return error`，一次 int 比较。与
    `frag_copy` 收口的校验同源、同样 NULL-safe。
 2. **`vm_free` 扫描是必需项**（R1 的开放问题 2，移入 §6.4）。
 3. **同一消息重复资源**：`frag_copy` 与 `val_deep_copy` 两处去重报错（v4 起比较
@@ -381,7 +379,7 @@ dtor 会在 GC 尾声（fromspace 扫描中）、`proc_die`、`vm_free` 里跑�
 | `src/builtin.c` | `cfunc_recv_peek`（其中做 deep copy 那步）遇资源报错（§4 peek 禁令）；peek/commit 路径加测试 |
 | `src/api.c` | 模块 API 实现；`vm_free` teardown 扫描（§6.4，覆盖 main 自己的堆） |
 | `src/vm.c` | `cfunc_spawn` 只剩「调 `proc_spawn_begin` + 建帧 + 入队」三行；`cfunc_send` 的 DEAD 早退不经 frag_copy（§5.4）；`do_cfunc_die` 作为收口违规的报错机制 |
-| `lib/timer.c` | `timer_register` 在注册线程上就拒绝资源值（`val_has_resource` → `tls_current_proc->cfunc_die = "resource"` → 返回 0，由 `do_ccall` 收口成进程隔离错误，不是静默 0）；fire 路径（`timer_fire_expired` → `mbox_deliver`）因此不需要资源分支 |
+| `lib/timer.c` | `timer_register` 在注册线程上就拒绝资源值（`val_has_resource` → `caller->cfunc_die = "resource"` → 返回 0，由 `do_ccall` 收口成进程隔离错误，不是静默 0）；fire 路径（`timer_fire_expired` → `mbox_deliver`）因此不需要资源分支 |
 | `docs/c-module.md` | §5「裸 int 句柄 + 槽表 + generation」整段退休，换成资源值一条路 + dtor 约束（§6.1） |
 | `docs/ta-language-spec.md` | `Resource` 不透明类型 + 「资源不得 send 给自己、不得进定时消息、不得走 selective receive」三条限制 + 违规 = 进程隔离错误 |
 | `lib/buffer.c` | 删表/锁，`Buffer { Buf(Resource) }`，dtor = free(data) |

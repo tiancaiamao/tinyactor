@@ -39,7 +39,7 @@ static int cov_cap = 0;
 static int cov_high = 0; /* one past the highest initialized slot */
 static pthread_mutex_t cov_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static Val cov_hit(VM *vm, Val *args, int nargs) {
+static Val cov_hit(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_int(args[0]))
         return val_int(0);
     long long id = val_get_int(args[0]);
@@ -98,7 +98,7 @@ static void cov_dump_env(void) {
     pthread_mutex_unlock(&cov_lock);
 }
 
-static Val cov_dump(VM *vm, Val *args, int nargs) {
+static Val cov_dump(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_string(args[0]))
         return val_int(0);
     HeapString *hs = val_get_string(args[0]);
@@ -114,7 +114,7 @@ static Val cov_dump(VM *vm, Val *args, int nargs) {
     return val_int(ok ? 1 : 0);
 }
 
-static Val cov_reset(VM *vm, Val *args, int nargs) {
+static Val cov_reset(VM *vm, Proc *p, Val *args, int nargs) {
     pthread_mutex_lock(&cov_lock);
     for (int i = 0; i < cov_high; i++)
         cov_counts[i] = 0;

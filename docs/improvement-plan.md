@@ -117,7 +117,8 @@ LSP 明确**不着急**（老派用户，先做基础）。
 - [x] E2. GC 安全：root 注册 / 引用管理 / 生命周期 / 析构 /
       明确文档化的心智模型（哪些内存 GC 管、哪些模块管、边界在哪）
       （`docs/c-module.md` §3：GC 在分配时收集 + per-proc `gc_gate` 门 + arena
-      固定预留 ⇒ C 模块无需 root，机制在 ta.h 公开 tls_current_proc；
+      固定预留 ⇒ C 模块无需 root，当前 proc 由 cfunc 签名显式传入（曾经是 ta.h 的
+      `tls_current_proc` 线程局部量，已删）；
       旧 gc_root_push/GC_ROOTS_SCOPE 已于 issue #136 删除，
       收集点从 opcode 边界迁到分配时 + 门见 #150）
 - [x] E3. 示例 C 模块模板 + 回归测试（普通人照着模板能写）

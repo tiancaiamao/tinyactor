@@ -16,35 +16,28 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Thread-local current process — set by the host run loop (tavm run_proc)
- * while a proc executes. */
-__thread Proc *tls_current_proc = NULL;
-
 /* ================================================================
  * Yield API — clean interface for C functions to suspend the
  * current proc.  Replaces the old 'would-block magic symbol.
  * ================================================================ */
-void vm_watch_fd(VM *vm, int fd, short events) {
-    Proc *p = tls_current_proc;
+void vm_watch_fd(VM *vm, Proc *p, int fd, short events) {
     p->wait_fd = fd;
     p->wait_events = events;
 }
 
-void vm_yield(VM *vm) {
+void vm_yield(VM *vm, Proc *p) {
     /* Per-proc flag: multiple worker threads share one VM and call C
      * functions concurrently; a shared flag on VM would race across
      * threads (a spurious yield in one proc, or a lost yield in another). */
-    Proc *p = tls_current_proc;
     if (p)
         p->cfunc_yield = TA_YIELD_IO;
 }
 
-void vm_yield_recv(VM *vm) {
+void vm_yield_recv(VM *vm, Proc *p) {
     /* The caller holds p->mbox_lock after observing an empty mailbox. The
      * yield is published by do_ccall under that same lock: it writes the
      * resume point, sets PROC_WAIT_RECV, registers the waiter and unlocks.
      * Setting state here would let mbox_deliver wake before pc/sp land. */
-    Proc *p = tls_current_proc;
     if (p)
         p->cfunc_yield = TA_YIELD_RECV;
 }
@@ -180,7 +173,7 @@ static int do_ccall(VM *vm, Proc *p, long cf, long n, long base, long pc, long c
     uint64_t cc_t0 = 0;
     if (vm->prof_on)
         cc_t0 = prof_now_ns();
-    Val r = vm->cfuncs[cf].fn(vm, cargv, (int)(n - 1));
+    Val r = vm->cfuncs[cf].fn(vm, p, cargv, (int)(n - 1));
     if (vm->prof_on) {
         uint64_t t1 = prof_now_ns();
         p->pc = pc;
@@ -247,7 +240,6 @@ static int do_ccall(VM *vm, Proc *p, long cf, long n, long base, long pc, long c
 }
 
 int run_proc(VM *vm, Proc *p) {
-    tls_current_proc = p;
     /* 图像态（词流 / fn 表 / 常量表）：装载期写入 vm->*，run 期间只读 ——
      * 不落局部别名，热循环直读 vm-> 字段。 */
     long base;

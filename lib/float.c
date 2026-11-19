@@ -14,7 +14,7 @@
 #include "ta.h"
 #include <math.h>
 
-static Val float_to_int(VM *vm, Val *args, int nargs) {
+static Val float_to_int(VM *vm, Proc *p, Val *args, int nargs) {
     if (!val_is_float(args[0]))
         return val_int(0);
     /* trunc() cuts toward zero without the UB of an out-of-range

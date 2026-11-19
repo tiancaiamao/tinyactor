@@ -69,6 +69,7 @@
 
 typedef struct {
     VM *vm;
+    Proc *p; /* 分配目标：整棵树落在这次调用的 proc 堆上 */
     const char *src;
     int len;
     int pos;
@@ -180,8 +181,7 @@ static Val parse_string(Parser *ps) {
         }
         out[n++] = (char)c;
     }
-    Proc *p = tls_current_proc;
-    Val v = val_string(p, out, n);
+    Val v = val_string(ps->p, out, n);
     free(out);
     return v;
 }
@@ -243,10 +243,9 @@ static Val parse_atom(Parser *ps, int as_name) {
 }
 
 /* Reverse the accumulated element chain. */
-static Val reverse_list(Val acc) {
+static Val reverse_list(Proc *p, Val acc) {
     Val list = val_nil();
     while (val_is_pair(acc)) {
-        Proc *p = tls_current_proc;
         Val next = val_get_cdr(acc);
         list = val_pair(p, val_get_car(acc), list);
         acc = next;
@@ -263,12 +262,12 @@ static Val parse_list_tail(Parser *ps, int depth) {
             return parse_fail(ps, "unbalanced '(' — missing ')'");
         if (peek(ps) == ')') {
             advance(ps);
-            return reverse_list(acc);
+            return reverse_list(ps->p, acc);
         }
         Val form = parse_form(ps, depth);
         if (ps->failed)
             return form;
-        acc = val_pair(tls_current_proc, form, acc);
+        acc = val_pair(ps->p, form, acc);
     }
 }
 
@@ -293,9 +292,8 @@ static Val parse_quote_name(Parser *ps) {
 
 /* Wrap a form as the list (quote form). */
 static Val make_quote(Parser *ps, Val form) {
-    Proc *p = tls_current_proc;
     Val quote = val_symbol((uint32_t)vm_intern_symbol(ps->vm, "quote"));
-    return val_pair(p, quote, val_pair(p, form, val_nil()));
+    return val_pair(ps->p, quote, val_pair(ps->p, form, val_nil()));
 }
 
 /* `(quote NAME)` — the cursor is at the `quote` word. Consumes the closing
@@ -340,14 +338,14 @@ static Val parse_form(Parser *ps, int depth) {
     return parse_atom(ps, 0);
 }
 
-static Val sexp_parse(VM *vm, Val *args, int nargs) {
+static Val sexp_parse(VM *vm, Proc *p, Val *args, int nargs) {
     sexp_err_reset();
     if (!val_is_string(args[0])) {
         snprintf(sexp_errbuf, sizeof(sexp_errbuf), "parse: argument is not a string");
         return val_int(-1);
     }
     HeapString *hs = val_get_string(args[0]);
-    Parser ps = {vm, hs->data, hs->len, 0, 1, 1, 0};
+    Parser ps = {vm, p, hs->data, hs->len, 0, 1, 1, 0};
 
     Val acc = val_nil();
     for (;;) {
@@ -357,15 +355,15 @@ static Val sexp_parse(VM *vm, Val *args, int nargs) {
         Val form = parse_form(&ps, 0);
         if (ps.failed)
             return val_int(-1);
-        acc = val_pair(tls_current_proc, form, acc);
+        acc = val_pair(p, form, acc);
     }
     /* reverse the accumulated chain */
-    return reverse_list(acc);
+    return reverse_list(p, acc);
 }
 
 /* Detail of the last sexp.parse error on this worker ("" if none). */
-static Val sexp_err(VM *vm, Val *args, int nargs) {
-    return val_string(tls_current_proc, sexp_errbuf, (int)strlen(sexp_errbuf));
+static Val sexp_err(VM *vm, Proc *p, Val *args, int nargs) {
+    return val_string(p, sexp_errbuf, (int)strlen(sexp_errbuf));
 }
 
 static TaFunc sexp_funcs[] = {{"parse", sexp_parse, 1}, {"err", sexp_err, 0}, {NULL, NULL, 0}};

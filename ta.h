@@ -216,12 +216,18 @@ typedef struct MsgFragment {
  * Process & Scheduler
  * ============================================================ */
 
-typedef struct VM VM; /* forward declaration for TaFunc */
+typedef struct VM VM;     /* forward declaration for TaFunc */
+typedef struct Proc Proc; /* forward declaration for TaFunc */
+
+/* C 模块函数：宿主把「当前进程」作为实参交给你（p），它同时是
+ * val_string / ta_resource_new 的分配目标与资源归属的判定依据 ——
+ * 不再有 tls_current_proc 这种隐式当前进程。 */
+typedef Val (*TaCFunc)(VM *vm, Proc *p, Val *args, int nargs);
 
 /* Module function descriptor */
 typedef struct {
     const char *name;
-    Val (*fn)(VM *vm, Val *args, int nargs);
+    TaCFunc fn;
     int nargs;
 } TaFunc;
 
@@ -261,7 +267,7 @@ typedef struct CallbackArena {
     uint8_t buf[TA_CCALL_CHUNK0];
 } CallbackArena;
 
-typedef struct Proc {
+struct Proc {
     int pid;
     atomic_int state;
 
@@ -414,7 +420,7 @@ typedef struct Proc {
 
     /* retired-proc free-list linkage (proc_die → vm_free) */
     struct Proc *next_retired;
-} Proc;
+};
 
 /* mem/mem_size 的唯一写口：派生缓存 stk 必须跟着走（见 Proc 里的注释）。 */
 static inline void proc_set_mem(Proc *p, uint8_t *mem, int size) {
@@ -530,10 +536,6 @@ enum {
 #define TA_MOD_TAG_STR(x) ""
 #endif
 
-/* Thread-local current process — set by the host run loop (tavm run_proc)
- * while a proc executes. */
-extern __thread Proc *tls_current_proc;
-
 /* 名字 → 下标的开放寻址表（线性探测；条目存宿主数组下标，-1 = 空；
  * cap 是 2 的幂，0 = 未建 —— OOM 时退化回线性扫描，正确性不变只是慢）。
  * 实现只有一份（api.c）：symbol intern 与 cfunc 按名解析共用。 */
@@ -601,7 +603,7 @@ struct VM {
     /* C function registry */
     struct {
         char *name;
-        Val (*fn)(VM *vm, Val *args, int nargs);
+        TaCFunc fn;
         int nargs;
     } cfuncs[MAX_CFUNCS];
     int cfunc_count;
@@ -819,7 +821,7 @@ VM *vm_new(void);
 void vm_free(VM *vm);
 
 /* loading */
-void vm_register(VM *vm, const char *name, Val (*fn)(VM *vm, Val *args, int nargs), int nargs);
+void vm_register(VM *vm, const char *name, TaCFunc fn, int nargs);
 void vm_register_module(VM *vm, const char *name, TaFunc *funcs, int nfuncs);
 /* Freeze the registry's host prefix: everything registered so far is a
  * statically linked C module of host_init. Call once, when host_init is
@@ -865,12 +867,12 @@ const char *vm_fn_name(const VM *vm, int fid);
 
 /* yield API — lets C functions (e.g. net I/O) suspend the current proc
  * without polluting the value space or intruding into opcode logic. */
-void vm_watch_fd(VM *vm, int fd, short events);
-void vm_yield(VM *vm);
-/* Block on the mailbox. Call while holding tls_current_proc->mbox_lock;
+void vm_watch_fd(VM *vm, Proc *p, int fd, short events);
+void vm_yield(VM *vm, Proc *p);
+/* Block on the mailbox. Call while holding p->mbox_lock;
  * do_ccall publishes the resume point + PROC_WAIT_RECV under that lock and
  * unlocks it, so mbox_deliver cannot miss the wakeup. */
-void vm_yield_recv(VM *vm);
+void vm_yield_recv(VM *vm, Proc *p);
 /* Wake the I/O poller so it re-scans deadlines/fds while blocked in poll()
  * (multi-thread mode only; a no-op in single-thread mode). */
 void vm_wait_register(VM *vm, Proc *p);
@@ -895,13 +897,13 @@ void proc_frame_init(VM *vm, Proc *p, int fnid, Val fnval);
  * 后自己 enqueue。返回 0 时 out_* 有效；-1 = 收口违规（docs/c-resource-
  * design.md §4），子已 proc_die、从未入队，报告由调用方按自己的协议出。
  * 非闭包实参是编译期不可达的表示错误 —— 这里 fatal（不返回）。 */
-int proc_spawn_begin(VM *vm, Val clos, Proc **out_np, Val *out_owned, int *out_fid);
+int proc_spawn_begin(VM *vm, Proc *parent, Val clos, Proc **out_np, Val *out_owned, int *out_fid);
 void proc_die(VM *vm, Proc *p, Val reason);
 /* 投递收口（docs/c-resource-design.md §4）：返回 0 = 入队成功（含资源时
  * 归属已移交 target）；-1 = 消息带资源但校验不过（self-send / 非属主 /
  * 重复 payload / 无 proc 上下文），消息未入队、归属不动 —— 调用方把
  * 违规映射成进程隔离错误（cfunc_send），其余调用点消息无资源、不可达。 */
-int mbox_deliver(VM *vm, Proc *target, Val msg);
+int mbox_deliver(VM *vm, Proc *sender, Proc *target, Val msg);
 Val mbox_pop(Proc *p);
 /* mbox_pop 的 cfunc 形态：调用方已在 do_ccall 的 chunk arena 里，不能
  * proc_reserve_heap（它会收集，而 arena 里的 C 局部变量不是根）。深拷
@@ -980,7 +982,7 @@ void ta_resource_release(HeapResource *r);
  * 契约见 lib/buffer.ta 等）。返回非 0 时不写 *out。
  * 归属先于释放检查：release 已经 free 掉 payload，投递出去的旧副本可以活
  * 得比它久，只有属主能读 r->res。 */
-int ta_resource_open(Val v, HeapResource **out, int closed_code);
+int ta_resource_open(Val v, Proc *self, HeapResource **out, int closed_code);
 
 /* 树遍历三件套（pair/closure 递归下钻；堆内与 fragment 布局同构，通用）：
  * val_has_resource —— 树里是否含资源（快路径校验、peek 禁令、timer 拒绝）；
@@ -1051,10 +1053,11 @@ HeapBytes *val_get_bytes(Val v);
  * ============================================================ */
 
 /* 深拷贝到 target 堆。res_err 非 NULL（spawn 路径）时做资源收口校验：
- * 每个 HEAP_RESOURCE 必须 owner_pid == 当前 proc（父）且 payload 不重复，
+ * 每个 HEAP_RESOURCE 必须 owner_pid == self->pid（self = 发起方，显式
+ * 传入的父 proc）且 payload 不重复，
  * 检出违规置 *res_err = 1 并中止拷贝（返回值未定义，调用方负责
  * proc_die）；NULL（recv 路径）跳过校验——fragment 入队时已验过。 */
-Val val_deep_copy(Proc *target, Val v, int *res_err);
+Val val_deep_copy(Proc *self, Proc *target, Val v, int *res_err);
 /* Deep copy for callback convergence: chunk objects rebuild in the heap,
  * arena (heap) objects pass through untouched, immediates as-is. */
 Val val_converge_copy(Proc *target, Val root);
