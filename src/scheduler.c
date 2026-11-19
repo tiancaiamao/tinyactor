@@ -54,11 +54,6 @@ static inline Val frag_box_ptr(uint16_t tag, void *ptr) {
     return ((uint64_t)tag << 48) | ((uint64_t)(uintptr_t)ptr & 0x0000FFFFFFFFFFFFULL);
 }
 
-/* data[] 需要的总字节数。分片布局用裸尺寸而不是 gc_obj_size —— 分片不是
- * GC 堆，没有「最小对象下限」那 16 字节（空字符串在堆里占 16，这里只占
- * 8），所以 min_object 传 0。 */
-static int frag_calc_size(Val root, int *has_res) { return val_tree_size(root, 0, has_res); }
-
 /* Copy a Val tree into fragment f's data[] (8-aligned placements).
  * Returns a new Val whose pointers address the fragment's data[]. */
 typedef struct {
@@ -169,7 +164,8 @@ static void vm_wake_proc(VM *vm, Proc *p) {
  * CAS 认领，而不是靠这里的锁。 */
 int mbox_deliver(VM *vm, Proc *sender, Proc *target, Val msg) {
     int has_res = 0;
-    int need = frag_calc_size(msg, &has_res);
+    /* 分片布局用裸尺寸：min_object = 0，分片不是 GC 堆、没有 16 字节下限 */
+    int need = val_tree_size(msg, 0, &has_res);
     /* 资源收口校验（docs/c-resource-design.md §4）：self-send / 非属主 /
      * 重复 payload / 无 proc 上下文（poller 线程）→ 违规：消息不入队、
      * 归属不动，返回 -1 由调用方映射成进程隔离错误（LB_SEND）。 */
