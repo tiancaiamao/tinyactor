@@ -832,9 +832,6 @@ void vm_seal_host_modules(VM *vm);
  * 判据不能用整个注册表，否则答案随装载顺序变。 */
 int vm_host_module_registered(VM *vm, const char *mod, int mod_len);
 int vm_find_cfunc(VM *vm, const char *name);
-/* Monotonic clock in milliseconds (CLOCK_MONOTONIC). Shared by src/net.c
- * (connect deadlines) and src/scheduler.c (I/O poller deadline wakes). */
-void vm_register_http_module(VM *vm);
 
 /* execution */
 void vm_poller_start(VM *vm);
@@ -904,6 +901,11 @@ void proc_die(VM *vm, Proc *p, Val reason);
  * 重复 payload / 无 proc 上下文），消息未入队、归属不动 —— 调用方把
  * 违规映射成进程隔离错误（cfunc_send），其余调用点消息无资源、不可达。 */
 int mbox_deliver(VM *vm, Proc *sender, Proc *target, Val msg);
+/* 摘下邮箱头 fragment 的指针手术本体，*调用方须已持 p->mbox_lock*。
+ * 不加锁的摘头（mbox_pop / mbox_pop_cfunc）走 scheduler.c 内部包装。 */
+MsgFragment *mbox_detach_head_locked(Proc *p);
+/* 丢弃邮箱里未投递的 fragment（连同其中的资源）：proc_die / vm_free 用 */
+void mbox_drain(Proc *p);
 Val mbox_pop(Proc *p);
 /* mbox_pop 的 cfunc 形态：调用方已在 do_ccall 的 chunk arena 里，不能
  * proc_reserve_heap（它会收集，而 arena 里的 C 局部变量不是根）。深拷
@@ -922,9 +924,6 @@ uint64_t prof_now_ns(void);
 
 /* debug */
 void print_val(VM *vm, Val v);
-
-/* REPL */
-Val vm_eval(VM *vm, const char *src);
 
 /* ============================================================
  * C API — value constructors
