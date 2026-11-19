@@ -35,7 +35,9 @@
 #         callMain(['-q','user.tabc'])            // run
 #
 # All intermediate artifacts go to a temp dir (cleaned up on exit); the only
-# repository output is docs/wasm/. The script is idempotent and repeatable.
+# output is docs/wasm/ — a build artifact (.gitignore'd, NOT committed). It is
+# produced by `make wasm` locally and freshly on every deploy by
+# .github/workflows/pages.yml. The script is idempotent and repeatable.
 #
 # Usage:
 #   scripts/build-wasm.sh [options]
@@ -122,7 +124,7 @@ fi
 # --- 2. Emscripten build ---------------------------------------------------
 # VM sources = all of src/*.c except main.c (it has main();
 # it is linked explicitly below, exactly once). src/ holds nothing but the
-# bytecode VM runtime (src/ holds only the VM runtime).
+# bytecode VM runtime — every C module lives in lib/<名字>.c.
 VM_SRCS=()
 for f in "$REPO_ROOT"/src/*.c; do
     [ "$f" = "$REPO_ROOT/src/main.c" ] && continue
@@ -130,11 +132,13 @@ for f in "$REPO_ROOT"/src/*.c; do
 done
 
 # C modules the compiler itself calls (str: 读源码拼字符串；file: 读模块源；
-# os: 出错退出)。原生构建里它们是 lazy dylib（首次引用时 dlopen），wasm 没有
+# os: 出错退出)，外加语言层的 int / float 转换（数值塔是用户程序随时会调的
+# 词表）。原生构建里它们是 lazy dylib（首次引用时 dlopen），wasm 没有
 # dlopen，所以静态链进来。每个 lib/<mod>.c 都导出同名 vm_load_self，静态
 # 链接会撞车——这一遍编译用 -Dvm_load_self=ta_wasm_<mod>_load_self 改名，
-# 注册表在 src/host-wasm.c（两边名字必须一致，漏改 = 链接期 undefined）。
-WASM_C_MODULES=(str buffer file os)
+# 注册表在 src/main.c 的 host_wasm_static_modules（两边名字必须一致，
+# 漏改 = 链接期 undefined）。
+WASM_C_MODULES=(str buffer file os int float)
 
 # `--embed-file vendor` etc. are relative to the payload dir so the embedded
 # virtual FS paths are /vendor/tinyactor/lib/... , /hello.ta , /hello.tabc .

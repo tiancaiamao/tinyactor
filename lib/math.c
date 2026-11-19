@@ -8,7 +8,7 @@
  * the import a no-op and silently drop lib/math.ta).
  *
  * Float results are IEEE doubles (TA `float`). floor/ceil return TA ints,
- * normalized into int48 the same way as src/num.c float.to_int (fmod 2^48
+ * normalized into int48 the same way as lib/float.c float.to_int (fmod 2^48
  * wrap — no out-of-range int64 cast UB).
  *
  * Negative-input contract (documented in lib/math.ta): sqrt/log of a
@@ -22,7 +22,7 @@
 #include "ta.h"
 #include <math.h>
 
-/* double -> boxed int48, same normalization as src/num.c float_to_int. */
+/* double -> boxed int48, same normalization as lib/float.c float_to_int. */
 static Val d_to_i48(double t) {
     if (isnan(t))
         return val_int(0);

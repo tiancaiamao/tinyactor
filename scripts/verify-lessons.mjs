@@ -4,10 +4,12 @@
 //
 //   native — `tinyactor run`（每课一颗新进程）
 //   wasm   — docs/wasm/*.js 里的真产物，也就是 Playground 在浏览器里跑的那份
-//            （同一个实例反复 callMain，和页面一样）
+//            （同一个实例反复 callMain，和页面一样）。这份产物不入库，由
+//            `make wasm` / .github/workflows/pages.yml 现编；本地没编过就跳过
+//            这条路径并说明。
 //
-// 两条都跑的理由：课程是给浏览器里的 WASM 编译器用的，只测原生会让
-// docs/wasm 悄悄过期——历史上它就这么烂了一个月（26 课里有课直接编译不过）。
+// 两条都跑的理由：课程是给浏览器里的 WASM 编译器用的，只测原生会让 wasm 悄悄
+// 和源码脱节——历史上它就这么烂了一个月（26 课里有课直接编译不过）。
 //
 //   node scripts/verify-lessons.mjs            # 跑全部课程
 //   node scripts/verify-lessons.mjs 名字 ...   # 只跑指定 id
@@ -19,7 +21,7 @@
 //
 // 课程数据的取法：docs/tour-lessons.js 里 `const LESSONS = [……];` 之间是
 // 严格 JSON（不给 JSON 加注释，注释写在这个文件里），这里按标记切出来解析。
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
@@ -151,8 +153,13 @@ if (lessons.length === 0) {
 }
 
 const failedNative = await runAll('native', nativeRunner(), lessons);
-const failedWasm = await runAll('wasm', await wasmRunner(), lessons);
+const hasWasm = existsSync(WASM_JS);
+const failedWasm = hasWasm ? await runAll('wasm', await wasmRunner(), lessons) : 0;
+if (!hasWasm) {
+  console.log(`--- wasm\n跳过：${WASM_JS} 不存在（产物不入库，先跑 make wasm）`);
+}
 
 const failed = failedNative + failedWasm;
-console.log(`\n${lessons.length * 2 - failed}/${lessons.length * 2} 课次通过（native + wasm）`);
+const runs = lessons.length * (hasWasm ? 2 : 1);
+console.log(`\n${runs - failed}/${runs} 课次通过（native${hasWasm ? ' + wasm' : ''}）`);
 process.exit(failed === 0 ? 0 : 1);

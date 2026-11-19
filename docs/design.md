@@ -286,7 +286,7 @@ Per-process semispace copying GC：
 │                  bytecode (.tabc)                    │
 ├─────────────────────────────────────────────────────┤
 │  vm.c/scheduler.c/gc.c（解释器+调度器+GC）← C 运行时（~5,750 行）
-│  api.c / builtin.c / num.c / host.c / resource.c（C 模块 net.c/timer.c/… 在 lib/）
+│  api.c / builtin.c / resource.c（C 模块 int.c/float.c/net.c/… 全在 lib/）
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -300,15 +300,14 @@ Per-process semispace copying GC：
 │   ├── val.c          NaN-boxing 值表示
 │   ├── api.c          VM 自省 + 模块注册
 │   ├── builtin.c     actor 原语的宿主 cfunc 实现
-│   ├── host.c         宿主共用的初始化（裸名 cfunc 白名单，只有一份）
 │   ├── resource.c     不透明 C 资源值（docs/c-resource-design.md）
-│   ├── num.c/prof.c   数值基元 / 采样
-│   └── main.c         CLI 入口（.tabc 装载）
+│   ├── prof.c         采样
+│   └── main.c         CLI 入口（.tabc 装载）+ 宿主初始化（裸名 cfunc 白名单）
 ├── lib/               TA 标准库（*.ta）+ C 模块（*.c/*.dylib）
 │   ├── bootstrap/     编译器源码（tokenizer/parser/typecheck/
 │   │                  lower-ast/compile/kl/bytecode/fmt/driver…）
 │   ├── *.c            C 模块：net/timer/file/str/math/os/time/random/
-│   │                  encoding/sexp/sha256/cov/buffer/process/tls
+│   │                  encoding/sexp/sha256/cov/buffer/process/tls/int/float
 │   └── bootstrap.tabc 种子编译器（已验证固定点）
 ├── vendor/            依赖树（`<树名>/<路径>` → import 拼路径的基址；
 │                      tinyactor 自指链接，见 docs/modules.md）

@@ -50,6 +50,9 @@ src/vm.c.bak
 # Jekyll site output (docs/ built for GitHub Pages)
 docs/_site/
 
+# Playground 的 wasm 产物：构建输出，不入库（make wasm / CI 生成）
+docs/wasm/
+
 # Benchmark results
 benchmark/results/*.json
 benchmark/results/*.csv

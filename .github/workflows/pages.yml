@@ -1,0 +1,105 @@
+name: Playground
+
+# Playground 的 wasm 产物不入库（docs/wasm/ 是构建输出），由这里现编：
+#
+#   1. build  — emcc 编 wasm + 跑课程门（native 与 wasm 双路）+ Jekyll 建站
+#               + 上传 Pages artifact。
+#   2. deploy — 部署到 GitHub Pages。
+#
+# **只在 main 上跑，不在 pull_request 上跑**：这套要多下一个 emsdk 再全量
+# 编 wasm，几十秒到几分钟，压在 PR 上不值——PR 的门是 `make test`（native 路
+# 的课程门在里面）。wasm 路万一编坏，main 上这里会红、且部署不成功时站点
+# 保持上一次部署，不会把线上搞挂。要提前验就在分支上 `make wasm &
+# node scripts/verify-lessons.mjs` 或 merge 前手动 dispatch。
+#
+# 触发范围就是「会影响站点的东西」：文档、VM 源码、C 模块、编译期种子、构建脚本。
+# 注意 Pages 的发布方式必须是 "GitHub Actions"（不是 legacy 的 main:/docs）；
+# legacy 模式下 GitHub 自己跑 Jekyll、只能发仓库里已有的文件，那就又得把 wasm
+# 塞回仓库。
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'docs/**'
+      - 'src/**'
+      - 'include/**'
+      - 'lib/**'
+      - 'scripts/build-wasm.sh'
+      - 'scripts/verify-lessons.mjs'
+      - 'Makefile'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: pages-${{ github.ref }}
+  # 不取消正在进行的部署
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      # emsdk 用 git clone 装（一个 run 步骤，不引第三方 action）；缓存整份
+      # 安装目录，activate 是瞬时的，省掉每次 ~300MB 下载。
+      - name: Cache emsdk
+        uses: actions/cache@v4
+        with:
+          path: ~/emsdk
+          key: emsdk-${{ runner.os }}-latest-v1
+
+      - name: Install emscripten
+        run: |
+          if [ ! -x ~/emsdk/emsdk ]; then
+            git clone --depth 1 https://github.com/emscripten-core/emsdk.git ~/emsdk
+            ~/emsdk/emsdk install latest
+          fi
+          ~/emsdk/emsdk activate latest
+          echo "$HOME/emsdk/upstream/emscripten" >> "$GITHUB_PATH"
+
+      # build-wasm.sh 要 ./tavm 预编译 hello.tabc，并要 lib/* 现成的模块 .so。
+      # lib/bootstrap.tabc 也显式建：checkout 出来的 mtime 顺序会让种子"看起来"
+      # 比 driver.ta 旧，而种子的重建归 Makefile 这条规则（make bootstrap），
+      # 不该由 tinyactor 运行期的自重建路径代劳。
+      - name: Build VM
+        run: |
+          make -j"$(nproc)" all lib/bootstrap.tabc
+          emcc --version | head -1
+
+      - name: Build wasm
+        run: ./scripts/build-wasm.sh
+
+      # 课程门：native 路 + 刚编出来的 wasm 路，必须都过
+      - name: Verify lessons
+        run: node scripts/verify-lessons.mjs
+
+      # github-pages gem 环境（含 optional-front-matter / default-layout 这些
+      # Pages 默认插件），与 legacy 行为一致；baseurl 来自 docs/_config.yml。
+      - name: Build site
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: ./docs
+          destination: ./_site
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./_site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
